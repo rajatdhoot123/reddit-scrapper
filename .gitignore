@@ -1,0 +1,11 @@
+__pycache__/
+
+scrapes/*
+target/*
+
+Cargo.lock
+
+
+.DS_Store
+
+.env
