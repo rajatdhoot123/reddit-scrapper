@@ -339,12 +339,15 @@ def upload_to_r2(file_path, object_key, config={}):
         logger.info(
             f"Uploading {file_path} to R2 bucket {R2_BUCKET_NAME} as {object_key}")
 
-        # Build metadata dictionary
+        # Build metadata dictionary - convert all values to strings for R2 compatibility
         metadata = {
             'upload_date': datetime.now().isoformat(),
             'source': 'automated_reddit_scraper',
-            **config
         }
+        
+        # Convert all config values to strings since R2 metadata must be strings
+        for key, value in config.items():
+            metadata[key] = str(value)
 
         with open(file_path, 'rb') as f:
             r2_client.upload_fileobj(
