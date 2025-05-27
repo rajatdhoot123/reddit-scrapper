@@ -223,6 +223,35 @@ python config_editor.py schedule weekly_scrapes true
 python config_editor.py list
 ```
 
+### Configuration Management
+
+#### View Configuration Status
+```bash
+# List all configurations with their enable/disable status
+python scrape_manager.py list-configs
+
+# Show configuration management help
+python scrape_manager.py config-help
+```
+
+#### Toggle Settings with Config Editor
+```bash
+# Disable all scraping globally
+python config_editor.py global master_enabled false
+
+# Disable comment scraping globally
+python config_editor.py global comment_scraping_globally_enabled false
+
+# Disable hourly scrapes
+python config_editor.py schedule hourly_hot_scrapes false
+
+# Enable weekly scrapes
+python config_editor.py schedule weekly_scrapes true
+
+# List available settings
+python config_editor.py list
+```
+
 ### Programmatic Usage
 
 #### Manual Scraping
