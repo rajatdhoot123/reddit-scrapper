@@ -45,9 +45,31 @@ app.conf.update(
 
     # Beat schedule for periodic tasks
     beat_schedule={
+        # Legacy daily scrape (for backward compatibility)
         'daily-reddit-scrape': {
             'task': 'tasks.scrape_and_upload_to_r2',
             'schedule': crontab(hour=23, minute=30),  # 11:30 PM UTC daily
+        },
+        
+        # Enhanced scheduled tasks
+        'daily-scrapes': {
+            'task': 'tasks.daily_scrape_task',
+            'schedule': crontab(hour=23, minute=30),  # 11:30 PM UTC daily
+        },
+        
+        'weekly-scrapes': {
+            'task': 'tasks.weekly_scrape_task',
+            'schedule': crontab(hour=2, minute=0, day_of_week=1),  # Monday 2:00 AM UTC
+        },
+        
+        'hourly-hot-scrapes': {
+            'task': 'tasks.hourly_hot_scrape_task',
+            'schedule': crontab(minute=0),  # Every hour at minute 0
+        },
+        
+        'custom-interval-scrapes': {
+            'task': 'tasks.custom_interval_scrape_task',
+            'schedule': crontab(minute=0, hour='*/6'),  # Every 6 hours
         },
     },
 
