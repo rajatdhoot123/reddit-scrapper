@@ -74,20 +74,6 @@ SUBREDDIT_CONFIGS = [
         }
     },
     
-    # Weekly scrape - PersonalFinanceIndia (disabled example)
-    {
-        "name": "PersonalFinanceIndia",
-        "category": "t",
-        "n_results": 50,
-        "time_filter": "week",
-        "enabled": False,  # Disabled subreddit config
-        "schedule": crontab(hour=3, minute=0, day_of_week=1),  # Monday 3:00 AM UTC
-        "options": {
-            "csv": False,
-            "auto_confirm": True
-        }
-    },
-    
     # Hourly hot posts - CreditCardsIndia
     {
         "name": "CreditCardsIndia",
@@ -100,74 +86,18 @@ SUBREDDIT_CONFIGS = [
             "auto_confirm": True
         }
     },
-    
-    # Custom interval using timedelta - CreditCardsIndia new posts
     {
-        "name": "CreditCardsIndia",
-        "category": "n",  # new posts
-        "n_results": 30,
-        "enabled": False,  # Disabled for now
-        "schedule": timedelta(hours=6),  # Every 6 hours
+        "name": "LifeProTips",
+        "category": "h",  # hot posts
+        "n_results": 10,
+        "enabled": True,
+        "schedule": crontab(minute=30),  # Every hour at minute 30
         "options": {
             "csv": False,
             "auto_confirm": True
         }
     },
     
-    # Multiple daily scrapes for different subreddits at different times
-    {
-        "name": "MachineLearning",
-        "category": "t",
-        "n_results": 20,
-        "time_filter": "day",
-        "enabled": True,
-        "schedule": crontab(hour=8, minute=0),  # 8:00 AM UTC
-        "options": {
-            "csv": False,
-            "auto_confirm": True
-        }
-    },
-    
-    {
-        "name": "Python",
-        "category": "h",
-        "n_results": 15,
-        "enabled": True,
-        "schedule": crontab(hour=12, minute=30),  # 12:30 PM UTC
-        "options": {
-            "csv": False,
-            "auto_confirm": True
-        }
-    },
-    
-    # Weekend-only scrapes
-    {
-        "name": "WeekendWarrior",
-        "category": "t",
-        "n_results": 30,
-        "time_filter": "day",
-        "enabled": True,
-        "schedule": crontab(hour=10, minute=0, day_of_week=[6, 0]),  # Saturday and Sunday 10:00 AM
-        "options": {
-            "csv": False,
-            "auto_confirm": True
-        }
-    },
-    
-    # Monthly deep dive
-    {
-        "name": "DataScience",
-        "category": "t",
-        "n_results": 200,
-        "time_filter": "month",
-        "enabled": True,
-        "schedule": crontab(hour=4, minute=0, day_of_month=1),  # 1st day of every month at 4:00 AM
-        "options": {
-            "csv": True,  # Enable CSV for monthly comprehensive scrapes
-            "rules": True,
-            "auto_confirm": True
-        }
-    }
 ]
 
 # Additional subreddit configurations for manual/on-demand scraping
