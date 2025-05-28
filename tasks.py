@@ -488,7 +488,31 @@ def scheduled_scrape_task(self, schedule_name: str):
 
                 # 5. Upload to R2 (if enabled)
                 if GLOBAL_SCRAPING_CONFIG.get("upload_to_r2_enabled", True):
-                    object_key = f"{schedule_name}_scrapes/{today}/reddit_scrapes_{schedule_name}_{today}.zip"
+                    # Generate timestamp for unique naming
+                    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+                    
+                    # Use different naming patterns based on schedule type
+                    if schedule_name == "hourly_hot_scrapes":
+                        # For hourly scrapes, include hour-minute to prevent overwrites
+                        object_key = f"{schedule_name}_scrapes/{today}/reddit_scrapes_{schedule_name}_{timestamp}.zip"
+                    elif schedule_name == "daily_scrapes":
+                        # For daily scrapes, use date only but add timestamp if multiple runs per day
+                        base_object_key = f"{schedule_name}_scrapes/{today}/reddit_scrapes_{schedule_name}_{today}.zip"
+                        
+                        # Check if we need to add timestamp (for retries or multiple runs)
+                        # This is a simple approach - in production you might want to check R2 directly
+                        try:
+                            r2_client = get_r2_client()
+                            r2_client.head_object(Bucket=R2_BUCKET_NAME, Key=base_object_key)
+                            # If file exists, add timestamp to avoid overwrite
+                            object_key = f"{schedule_name}_scrapes/{today}/reddit_scrapes_{schedule_name}_{timestamp}.zip"
+                            logger.info(f"Daily scrape file already exists, using timestamped name: {object_key}")
+                        except:
+                            # File doesn't exist, use base name
+                            object_key = base_object_key
+                    else:
+                        # For other schedules (weekly, custom), use timestamp for safety
+                        object_key = f"{schedule_name}_scrapes/{today}/reddit_scrapes_{schedule_name}_{timestamp}.zip"
                     
                     # Build metadata for upload
                     upload_metadata = {
@@ -692,7 +716,8 @@ def manual_scrape_from_config():
         archive_path = create_archive(scrapes_dir, archive_type="manual", custom_name="manual_scrapes")
         
         # Upload to R2
-        object_key = f"manual_scrapes/{today}/manual_scrapes_{today}.zip"
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        object_key = f"manual_scrapes/{today}/manual_scrapes_{timestamp}.zip"
         upload_metadata = {
             'scrape_type': 'manual',
             'subreddits_processed': len(MANUAL_SUBREDDIT_CONFIGS),

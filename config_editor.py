@@ -119,6 +119,53 @@ def list_available_settings():
         print(f"  {schedule}")
 
 
+def restart_celery_services():
+    """Restart Celery worker and beat services"""
+    import subprocess
+    import time
+    
+    print("🔄 Restarting Celery services...")
+    
+    try:
+        # Kill existing Celery processes
+        print("Stopping existing Celery processes...")
+        subprocess.run(["pkill", "-f", "celery"], check=False)
+        time.sleep(2)  # Give processes time to stop
+        
+        # Start worker in background
+        print("Starting Celery worker...")
+        worker_process = subprocess.Popen(
+            ["celery", "-A", "celery_config", "worker", "--loglevel=info"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        
+        # Start beat in background
+        print("Starting Celery beat...")
+        beat_process = subprocess.Popen(
+            ["celery", "-A", "celery_config", "beat", "--loglevel=info"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        
+        time.sleep(3)  # Give services time to start
+        
+        # Check if processes are running
+        if worker_process.poll() is None and beat_process.poll() is None:
+            print("✅ Celery services restarted successfully!")
+            print(f"Worker PID: {worker_process.pid}")
+            print(f"Beat PID: {beat_process.pid}")
+        else:
+            print("❌ Failed to start one or more Celery services")
+            
+    except Exception as e:
+        print(f"❌ Error restarting Celery services: {e}")
+        print("Please restart manually:")
+        print("pkill -f celery")
+        print("celery -A celery_config worker --loglevel=info &")
+        print("celery -A celery_config beat --loglevel=info &")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Configuration Editor for Reddit Scraping System",
@@ -139,6 +186,14 @@ Examples:
   
   # List available settings
   python config_editor.py list
+  
+  # Restart Celery services after changes
+  python config_editor.py restart
+  
+  # Monitor R2 uploads (separate script)
+  python r2_monitor.py --analyze
+  python r2_monitor.py --recent 12
+  python r2_monitor.py --conflicts
         """
     )
     
@@ -157,6 +212,9 @@ Examples:
     # List command
     subparsers.add_parser('list', help='List available settings')
     
+    # Restart command
+    subparsers.add_parser('restart', help='Restart Celery services')
+    
     args = parser.parse_args()
     
     if not args.command:
@@ -173,9 +231,14 @@ Examples:
         
     elif args.command == 'list':
         list_available_settings()
+        
+    elif args.command == 'restart':
+        restart_celery_services()
     
     if args.command in ['global', 'schedule']:
         print("\n⚠️  Remember to restart Celery for changes to take effect:")
+        print("python config_editor.py restart")
+        print("OR manually:")
         print("pkill -f celery")
         print("celery -A celery_config worker --loglevel=info &")
         print("celery -A celery_config beat --loglevel=info &")
