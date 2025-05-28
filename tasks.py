@@ -6,6 +6,7 @@ import json
 import boto3
 import zipfile
 import shutil
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from celery import Celery
@@ -491,13 +492,28 @@ def scheduled_scrape_task(self, schedule_name: str):
                     # Generate timestamp for unique naming
                     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
                     
+                    # Extract subreddit names from successful results
+                    subreddit_names = [r["subreddit"] for r in successful_results]
+                    
+                    # Create subreddit path component
+                    if len(subreddit_names) == 1:
+                        # Single subreddit - use the subreddit name directly
+                        subreddit_path = subreddit_names[0]
+                    else:
+                        # Multiple subreddits - create a combined name
+                        subreddit_path = "_".join(sorted(subreddit_names))
+                        # If the combined name is too long, use a hash or truncate
+                        if len(subreddit_path) > 100:
+                            subreddit_hash = hashlib.md5("_".join(sorted(subreddit_names)).encode()).hexdigest()[:8]
+                            subreddit_path = f"multi_subreddits_{subreddit_hash}"
+                    
                     # Use different naming patterns based on schedule type
                     if schedule_name == "hourly_hot_scrapes":
                         # For hourly scrapes, include hour-minute to prevent overwrites
-                        object_key = f"{schedule_name}_scrapes/{today}/reddit_scrapes_{schedule_name}_{timestamp}.zip"
+                        object_key = f"{schedule_name}_scrapes/{subreddit_path}/{today}/reddit_scrapes_{schedule_name}_{timestamp}.zip"
                     elif schedule_name == "daily_scrapes":
                         # For daily scrapes, use date only but add timestamp if multiple runs per day
-                        base_object_key = f"{schedule_name}_scrapes/{today}/reddit_scrapes_{schedule_name}_{today}.zip"
+                        base_object_key = f"{schedule_name}_scrapes/{subreddit_path}/{today}/reddit_scrapes_{schedule_name}_{today}.zip"
                         
                         # Check if we need to add timestamp (for retries or multiple runs)
                         # This is a simple approach - in production you might want to check R2 directly
@@ -505,18 +521,19 @@ def scheduled_scrape_task(self, schedule_name: str):
                             r2_client = get_r2_client()
                             r2_client.head_object(Bucket=R2_BUCKET_NAME, Key=base_object_key)
                             # If file exists, add timestamp to avoid overwrite
-                            object_key = f"{schedule_name}_scrapes/{today}/reddit_scrapes_{schedule_name}_{timestamp}.zip"
+                            object_key = f"{schedule_name}_scrapes/{subreddit_path}/{today}/reddit_scrapes_{schedule_name}_{timestamp}.zip"
                             logger.info(f"Daily scrape file already exists, using timestamped name: {object_key}")
                         except:
                             # File doesn't exist, use base name
                             object_key = base_object_key
                     else:
                         # For other schedules (weekly, custom), use timestamp for safety
-                        object_key = f"{schedule_name}_scrapes/{today}/reddit_scrapes_{schedule_name}_{timestamp}.zip"
+                        object_key = f"{schedule_name}_scrapes/{subreddit_path}/{today}/reddit_scrapes_{schedule_name}_{timestamp}.zip"
                     
                     # Build metadata for upload
                     upload_metadata = {
                         'schedule_name': schedule_name,
+                        'subreddits': ",".join(subreddit_names),  # Add subreddit list to metadata
                         'subreddits_processed': len(subreddit_configs),
                         'successful_scrapes': len(successful_results),
                         'skipped_scrapes': len([r for r in results if r["status"] == "skipped"]),
@@ -717,9 +734,26 @@ def manual_scrape_from_config():
         
         # Upload to R2
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        object_key = f"manual_scrapes/{today}/manual_scrapes_{timestamp}.zip"
+        
+        # Extract subreddit names from successful results
+        subreddit_names = [r["subreddit"] for r in successful_scrapes]
+        
+        # Create subreddit path component
+        if len(subreddit_names) == 1:
+            # Single subreddit - use the subreddit name directly
+            subreddit_path = subreddit_names[0]
+        else:
+            # Multiple subreddits - create a combined name
+            subreddit_path = "_".join(sorted(subreddit_names))
+            # If the combined name is too long, use a hash or truncate
+            if len(subreddit_path) > 100:
+                subreddit_hash = hashlib.md5("_".join(sorted(subreddit_names)).encode()).hexdigest()[:8]
+                subreddit_path = f"multi_subreddits_{subreddit_hash}"
+        
+        object_key = f"manual_scrapes/{subreddit_path}/{today}/manual_scrapes_{timestamp}.zip"
         upload_metadata = {
             'scrape_type': 'manual',
+            'subreddits': ",".join(subreddit_names),  # Add subreddit list to metadata
             'subreddits_processed': len(MANUAL_SUBREDDIT_CONFIGS),
             'successful_scrapes': len(successful_scrapes)
         }
