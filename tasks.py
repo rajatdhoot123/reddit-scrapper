@@ -436,6 +436,78 @@ def process_subreddit_config(config: Dict, scrapes_dir: Path) -> Dict:
     }
 
 
+def generate_unique_object_key(configs_to_process: List[Dict], scrape_type: str, 
+                              today: str, timestamp: str, results: List[Dict] = None) -> str:
+    """Generate a unique object key for R2 upload that differentiates between configurations"""
+    
+    if len(configs_to_process) == 1:
+        # Single configuration - create detailed path
+        config = configs_to_process[0]
+        subreddit = config["name"]
+        category = config["category"]
+        
+        # Category mapping for clarity
+        category_names = {
+            "h": "hot",
+            "n": "new", 
+            "t": "top",
+            "r": "rising",
+            "c": "controversial",
+            "s": "search"
+        }
+        category_name = category_names.get(category, category)
+        
+        # Build path components
+        path_parts = [subreddit, category_name]
+        
+        # Add time filter if present
+        if config.get("time_filter"):
+            path_parts.append(config["time_filter"])
+        
+        # Add n_results or keywords
+        if category == "s" and config.get("keywords"):
+            # For search, truncate long keywords and add hash if needed
+            keywords = str(config["keywords"])
+            if len(keywords) > 30:
+                keywords_hash = hashlib.md5(keywords.encode()).hexdigest()[:8]
+                path_parts.append(f"search_{keywords_hash}")
+            else:
+                safe_keywords = keywords.replace(" ", "_").replace("/", "_")
+                path_parts.append(f"search_{safe_keywords}")
+        elif config.get("n_results"):
+            path_parts.append(f"{config['n_results']}results")
+        
+        # Join with underscores for the config part
+        config_path = "_".join(path_parts)
+        
+        return f"{scrape_type}_scrapes/{subreddit}/{config_path}/{today}/{scrape_type}_{config_path}_{timestamp}.zip"
+    
+    else:
+        # Multiple configurations - use combined approach
+        if results:
+            subreddit_names = [r["subreddit"] for r in results if r["status"] == "success"]
+        else:
+            subreddit_names = [config["name"] for config in configs_to_process]
+        
+        unique_subreddits = sorted(set(subreddit_names))
+        
+        if len(unique_subreddits) == 1:
+            subreddit_path = unique_subreddits[0]
+        else:
+            subreddit_path = "_".join(unique_subreddits)
+            if len(subreddit_path) > 100:
+                subreddit_hash = hashlib.md5("_".join(unique_subreddits).encode()).hexdigest()[:8]
+                subreddit_path = f"multi_subreddits_{subreddit_hash}"
+        
+        # Create a hash of all configs to ensure uniqueness
+        config_signature = hashlib.md5(
+            str(sorted([(c.get("name"), c.get("category"), c.get("time_filter"), 
+                        c.get("n_results"), c.get("keywords")) for c in configs_to_process])).encode()
+        ).hexdigest()[:8]
+        
+        return f"{scrape_type}_scrapes/{subreddit_path}/multi_config_{config_signature}/{today}/{scrape_type}_multi_{config_signature}_{timestamp}.zip"
+
+
 @app.task(bind=True, max_retries=None)
 def scheduled_scrape_task(self, config_id: int = None):
     """Enhanced scheduled scraping task for individual subreddit configurations"""
@@ -499,24 +571,12 @@ def scheduled_scrape_task(self, config_id: int = None):
                     # Generate timestamp for unique naming
                     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
                     
-                    # Extract subreddit names from successful results
-                    subreddit_names = [r["subreddit"] for r in successful_results]
-                    
-                    # Create subreddit path component
-                    if len(subreddit_names) == 1:
-                        subreddit_path = subreddit_names[0]
-                    else:
-                        subreddit_path = "_".join(sorted(set(subreddit_names)))
-                        if len(subreddit_path) > 100:
-                            subreddit_hash = hashlib.md5("_".join(sorted(set(subreddit_names))).encode()).hexdigest()[:8]
-                            subreddit_path = f"multi_subreddits_{subreddit_hash}"
-                    
-                    object_key = f"scheduled_scrapes/{subreddit_path}/{today}/reddit_scrapes_{timestamp}.zip"
+                    object_key = generate_unique_object_key(configs_to_process, "scheduled", today, timestamp, results)
                     
                     # Build metadata for upload
                     upload_metadata = {
                         'config_type': 'scheduled',
-                        'subreddits': ",".join(set(subreddit_names)),
+                        'subreddits': ",".join(set(r["subreddit"] for r in successful_results)),
                         'configs_processed': len(configs_to_process),
                         'successful_scrapes': len(successful_results),
                         'skipped_scrapes': len([r for r in results if r["status"] == "skipped"]),
@@ -765,25 +825,10 @@ def manual_scrape_from_config():
         # Upload to R2
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
         
-        # Extract subreddit names from successful results
-        subreddit_names = [r["subreddit"] for r in successful_scrapes]
-        
-        # Create subreddit path component
-        if len(subreddit_names) == 1:
-            # Single subreddit - use the subreddit name directly
-            subreddit_path = subreddit_names[0]
-        else:
-            # Multiple subreddits - create a combined name
-            subreddit_path = "_".join(sorted(subreddit_names))
-            # If the combined name is too long, use a hash or truncate
-            if len(subreddit_path) > 100:
-                subreddit_hash = hashlib.md5("_".join(sorted(subreddit_names)).encode()).hexdigest()[:8]
-                subreddit_path = f"multi_subreddits_{subreddit_hash}"
-        
-        object_key = f"manual_scrapes/{subreddit_path}/{today}/manual_scrapes_{timestamp}.zip"
+        object_key = generate_unique_object_key(enabled_configs, "manual", today, timestamp, results)
         upload_metadata = {
             'scrape_type': 'manual',
-            'subreddits': ",".join(subreddit_names),  # Add subreddit list to metadata
+            'subreddits': ",".join(r["subreddit"] for r in successful_scrapes),  # Add subreddit list to metadata
             'subreddits_processed': len(MANUAL_SUBREDDIT_CONFIGS),
             'successful_scrapes': len(successful_scrapes)
         }
