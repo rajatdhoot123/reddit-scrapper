@@ -31,6 +31,18 @@ SUBREDDIT_SCHEDULES = {
                     "rules": False,
                     "auto_confirm": True
                 }
+            },
+            {
+                "name": "LifeProTips",
+                "category": "t",
+                "n_results": 25,
+                "time_filter": "day",
+                "enabled": True,  # Toggle for individual subreddit config
+                "options": {
+                    "csv": False,
+                    "rules": False,
+                    "auto_confirm": True
+                }
             }
         ]
     },
