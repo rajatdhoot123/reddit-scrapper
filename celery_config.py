@@ -24,6 +24,42 @@ else:
     # Local Redis without SSL
     connection_link = f"redis://{redis_host}:{redis_port}"
 
+# Function to generate beat schedule from subreddit configs
+def generate_beat_schedule():
+    """Generate beat schedule from individual subreddit configurations"""
+    try:
+        from subreddit_config import get_enabled_scheduled_configs
+        
+        beat_schedule = {}
+        enabled_configs = get_enabled_scheduled_configs()
+        
+        for i, config in enumerate(enabled_configs):
+            schedule = config.get('schedule')
+            if schedule:
+                task_name = f"config_{i}_{config['name']}_{config['category']}"
+                beat_schedule[task_name] = {
+                    'task': 'tasks.scheduled_scrape_task',
+                    'schedule': schedule,
+                    'args': [i]  # Pass config ID as argument
+                }
+        
+        # Add legacy task for backward compatibility
+        beat_schedule['legacy-daily-reddit-scrape'] = {
+            'task': 'tasks.scrape_and_upload_to_r2',
+            'schedule': crontab(hour=23, minute=30),  # 11:30 PM UTC daily
+        }
+        
+        return beat_schedule
+        
+    except ImportError:
+        # Fallback schedule if config can't be imported
+        return {
+            'legacy-daily-reddit-scrape': {
+                'task': 'tasks.scrape_and_upload_to_r2',
+                'schedule': crontab(hour=23, minute=30),
+            }
+        }
+
 # Celery configuration
 app.conf.update(
     # Broker settings (using Upstash Redis)
@@ -54,35 +90,8 @@ app.conf.update(
     reddit_client_id=os.getenv('REDDIT_CLIENT_ID'),
     reddit_client_secret=os.getenv('REDDIT_CLIENT_SECRET'),
 
-    # Beat schedule for periodic tasks
-    beat_schedule={
-        # Legacy daily scrape (for backward compatibility)
-        'daily-reddit-scrape': {
-            'task': 'tasks.scrape_and_upload_to_r2',
-            'schedule': crontab(hour=23, minute=30),  # 11:30 PM UTC daily
-        },
-        
-        # Enhanced scheduled tasks
-        'daily-scrapes': {
-            'task': 'tasks.daily_scrape_task',
-            'schedule': crontab(hour=23, minute=30),  # 11:30 PM UTC daily
-        },
-        
-        'weekly-scrapes': {
-            'task': 'tasks.weekly_scrape_task',
-            'schedule': crontab(hour=2, minute=0, day_of_week=1),  # Monday 2:00 AM UTC
-        },
-        
-        'hourly-hot-scrapes': {
-            'task': 'tasks.hourly_hot_scrape_task',
-            'schedule': crontab(minute=0),  # Every hour at minute 0
-        },
-        
-        'custom-interval-scrapes': {
-            'task': 'tasks.custom_interval_scrape_task',
-            'schedule': crontab(minute=0, hour='*/6'),  # Every 6 hours
-        },
-    },
+    # Beat schedule - dynamically generated from subreddit configs
+    beat_schedule=generate_beat_schedule(),
 
     # Remove task routing to use default queue
     # task_routes={

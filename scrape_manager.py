@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from celery_config import app
-from subreddit_config import SUBREDDIT_SCHEDULES, MANUAL_SUBREDDIT_CONFIGS, GLOBAL_SCRAPING_CONFIG
+from subreddit_config import SUBREDDIT_CONFIGS, MANUAL_SUBREDDIT_CONFIGS, GLOBAL_SCRAPING_CONFIG, get_enabled_scheduled_configs
 import tasks
 
 
@@ -82,17 +82,21 @@ def run_manual_scrape(subreddit: str, category: str, n_results_or_keywords: str,
         print(f"Error running manual scrape: {e}")
 
 
-def run_scheduled_task(schedule_name: str):
-    """Run a specific scheduled task"""
-    if schedule_name not in SUBREDDIT_SCHEDULES:
-        print(f"Error: Unknown schedule '{schedule_name}'")
-        print(f"Available schedules: {', '.join(SUBREDDIT_SCHEDULES.keys())}")
+def run_scheduled_task(config_id: int):
+    """Run a specific scheduled task by config ID"""
+    enabled_configs = get_enabled_scheduled_configs()
+    
+    if config_id >= len(enabled_configs):
+        print(f"Error: Invalid config ID '{config_id}'")
+        print(f"Available config IDs: 0 to {len(enabled_configs) - 1}")
+        print("\nUse 'list-configs' to see available configurations")
         return
     
     try:
-        print(f"Starting scheduled task: {schedule_name}")
+        config = enabled_configs[config_id]
+        print(f"Starting scheduled task for config ID {config_id}: r/{config['name']} ({config['category']})")
         result = tasks.scheduled_scrape_task.apply_async(
-            args=[schedule_name]
+            args=[config_id]
         ).get(timeout=1800)  # 30 minute timeout
         
         print("\n=== Scheduled Task Result ===")
@@ -125,18 +129,26 @@ def list_configurations():
         print(f"  {key}: {status}")
     
     print("\n=== Scheduled Configurations ===")
-    for schedule_name, config in SUBREDDIT_SCHEDULES.items():
-        schedule_status = "✓ ENABLED" if config.get('enabled', True) else "✗ DISABLED"
-        print(f"\n{schedule_name}: {schedule_status}")
-        print(f"  Schedule: {config['schedule']}")
-        print(f"  Subreddits: {len(config['subreddits'])}")
-        for subreddit_config in config['subreddits']:
-            name = subreddit_config['name']
-            category = subreddit_config['category']
-            n_results = subreddit_config.get('n_results', subreddit_config.get('keywords', 'N/A'))
-            time_filter = subreddit_config.get('time_filter', 'None')
-            sub_status = "✓" if subreddit_config.get('enabled', True) else "✗"
-            print(f"    {sub_status} r/{name} ({category}, {n_results}, {time_filter})")
+    enabled_configs = get_enabled_scheduled_configs()
+    
+    print(f"\nTotal Configurations: {len(SUBREDDIT_CONFIGS)}")
+    print(f"Enabled Configurations: {len(enabled_configs)}")
+    
+    for i, config in enumerate(SUBREDDIT_CONFIGS):
+        status = "✓ ENABLED" if config.get('enabled', True) else "✗ DISABLED"
+        name = config['name']
+        category = config['category']
+        n_results = config.get('n_results', config.get('keywords', 'N/A'))
+        time_filter = config.get('time_filter', 'None')
+        schedule = config.get('schedule', 'No schedule')
+        
+        print(f"\n[{i}] r/{name}: {status}")
+        print(f"    Category: {category}, Results: {n_results}, Time: {time_filter}")
+        print(f"    Schedule: {schedule}")
+        
+        if config.get('options'):
+            options = config['options']
+            print(f"    Options: CSV={options.get('csv', False)}, Rules={options.get('rules', False)}")
     
     print("\n=== Manual Configurations ===")
     for i, config in enumerate(MANUAL_SUBREDDIT_CONFIGS, 1):
@@ -148,17 +160,18 @@ def list_configurations():
         print(f"{i}. {status} r/{name} ({category}, {n_results}, {time_filter})")
 
 
-def toggle_schedule(schedule_name: str, enabled: bool):
-    """Toggle a schedule on or off"""
-    if schedule_name not in SUBREDDIT_SCHEDULES:
-        print(f"Error: Unknown schedule '{schedule_name}'")
-        print(f"Available schedules: {', '.join(SUBREDDIT_SCHEDULES.keys())}")
+def toggle_config(config_id: int, enabled: bool):
+    """Toggle a configuration on or off"""
+    if config_id >= len(SUBREDDIT_CONFIGS):
+        print(f"Error: Invalid config ID '{config_id}'")
+        print(f"Available config IDs: 0 to {len(SUBREDDIT_CONFIGS) - 1}")
         return
     
+    config = SUBREDDIT_CONFIGS[config_id]
     # This would require modifying the config file
-    print(f"To {'enable' if enabled else 'disable'} schedule '{schedule_name}':")
+    print(f"To {'enable' if enabled else 'disable'} config {config_id} (r/{config['name']}):")
     print(f"Edit subreddit_config.py and set:")
-    print(f"SUBREDDIT_SCHEDULES['{schedule_name}']['enabled'] = {enabled}")
+    print(f"SUBREDDIT_CONFIGS[{config_id}]['enabled'] = {enabled}")
     print("Then restart Celery for changes to take effect.")
 
 
@@ -174,17 +187,17 @@ def show_config_help():
     print("   - upload_to_r2_enabled: Enable/disable R2 uploads")
     print("   - create_archives_enabled: Enable/disable archive creation")
     
-    print("\n2. Schedule-level Controls:")
-    print("   SUBREDDIT_SCHEDULES['schedule_name']['enabled'] = True/False")
+    print("\n2. Individual Configuration Controls:")
+    print("   SUBREDDIT_CONFIGS[index]['enabled'] = True/False")
     
-    print("\n3. Individual Subreddit Controls:")
-    print("   Each subreddit config has an 'enabled' field")
+    print("\n3. Individual Subreddit Schedule Controls:")
+    print("   Each subreddit config has an 'enabled' field and 'schedule' field")
     
     print("\nExamples:")
-    print("# Disable hourly scrapes")
-    print("SUBREDDIT_SCHEDULES['hourly_hot_scrapes']['enabled'] = False")
-    print("\n# Disable a specific subreddit in weekly scrapes")
-    print("# Find the subreddit config and set 'enabled': False")
+    print("# Disable a specific config (e.g., config 0)")
+    print("SUBREDDIT_CONFIGS[0]['enabled'] = False")
+    print("\n# Change schedule for a config")
+    print("SUBREDDIT_CONFIGS[0]['schedule'] = crontab(hour=12, minute=0)")
     
     print("\n# Disable all comment scraping globally")
     print("GLOBAL_SCRAPING_CONFIG['comment_scraping_globally_enabled'] = False")
@@ -262,8 +275,7 @@ Examples:
     
     # Scheduled task command
     schedule_parser = subparsers.add_parser('schedule', help='Run scheduled task')
-    schedule_parser.add_argument('schedule_name', choices=list(SUBREDDIT_SCHEDULES.keys()),
-                                help='Schedule name to run')
+    schedule_parser.add_argument('config_id', type=int, help='Configuration ID to run')
     
     # Manual config command
     subparsers.add_parser('manual-config', help='Run predefined manual configurations')
@@ -291,7 +303,7 @@ Examples:
             args.time_filter, args.csv, args.rules, args.no_comments
         )
     elif args.command == 'schedule':
-        run_scheduled_task(args.schedule_name)
+        run_scheduled_task(args.config_id)
     elif args.command == 'manual-config':
         run_manual_config_scrape()
     elif args.command == 'list-configs':

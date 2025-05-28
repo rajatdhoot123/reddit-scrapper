@@ -107,16 +107,22 @@ def list_available_settings():
     for setting in global_settings:
         print(f"  {setting}")
     
-    print("\n=== Available Schedules ===")
-    schedules = [
-        "daily_scrapes",
-        "weekly_scrapes", 
-        "hourly_hot_scrapes",
-        "custom_interval_scrapes"
-    ]
+    print("\n=== Individual Configuration IDs ===")
+    print("Use 'python scrape_manager.py list-configs' to see all configurations with their IDs")
+    print("Configuration IDs range from 0 to N-1 where N is the total number of configs")
+
+
+def toggle_config_by_id(config_id: int, enabled: bool):
+    """Toggle a specific configuration by ID"""
+    content = read_config_file()
+    if not content:
+        return
     
-    for schedule in schedules:
-        print(f"  {schedule}")
+    print(f"To toggle configuration {config_id}:")
+    print(f"1. Open subreddit_config.py")
+    print(f"2. Find SUBREDDIT_CONFIGS[{config_id}]")
+    print(f"3. Set 'enabled': {enabled}")
+    print("4. Save the file and restart Celery")
 
 
 def restart_celery_services():
@@ -178,11 +184,11 @@ Examples:
   # Disable comment scraping globally
   python config_editor.py global comment_scraping_globally_enabled false
   
-  # Disable hourly scrapes
-  python config_editor.py schedule hourly_hot_scrapes false
+  # Disable a specific configuration (by ID)
+  python config_editor.py config 0 false
   
-  # Enable weekly scrapes
-  python config_editor.py schedule weekly_scrapes true
+  # Enable a specific configuration (by ID)
+  python config_editor.py config 1 true
   
   # List available settings
   python config_editor.py list
@@ -204,10 +210,10 @@ Examples:
     global_parser.add_argument('setting', help='Global setting name')
     global_parser.add_argument('enabled', choices=['true', 'false'], help='Enable or disable')
     
-    # Schedule command
-    schedule_parser = subparsers.add_parser('schedule', help='Toggle schedule')
-    schedule_parser.add_argument('schedule_name', help='Schedule name')
-    schedule_parser.add_argument('enabled', choices=['true', 'false'], help='Enable or disable')
+    # Config command (replaces schedule command)
+    config_parser = subparsers.add_parser('config', help='Toggle configuration by ID')
+    config_parser.add_argument('config_id', type=int, help='Configuration ID (0-based index)')
+    config_parser.add_argument('enabled', choices=['true', 'false'], help='Enable or disable')
     
     # List command
     subparsers.add_parser('list', help='List available settings')
@@ -222,26 +228,15 @@ Examples:
         return
     
     if args.command == 'global':
-        enabled = args.enabled.lower() == 'true'
-        toggle_global_setting(args.setting, enabled)
-        
-    elif args.command == 'schedule':
-        enabled = args.enabled.lower() == 'true'
-        toggle_schedule(args.schedule_name, enabled)
-        
+        toggle_global_setting(args.setting, args.enabled == 'true')
+    elif args.command == 'config':
+        toggle_config_by_id(args.config_id, args.enabled == 'true')
     elif args.command == 'list':
         list_available_settings()
-        
     elif args.command == 'restart':
         restart_celery_services()
-    
-    if args.command in ['global', 'schedule']:
-        print("\n⚠️  Remember to restart Celery for changes to take effect:")
-        print("python config_editor.py restart")
-        print("OR manually:")
-        print("pkill -f celery")
-        print("celery -A celery_config worker --loglevel=info &")
-        print("celery -A celery_config beat --loglevel=info &")
+    else:
+        parser.print_help()
 
 
 if __name__ == '__main__':

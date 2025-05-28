@@ -24,12 +24,13 @@ load_dotenv()
 
 # Import configurations
 from subreddit_config import (
-    SUBREDDIT_SCHEDULES, 
+    SUBREDDIT_CONFIGS, 
     MANUAL_SUBREDDIT_CONFIGS, 
     COMMENT_SCRAPING_CONFIG,
     ARCHIVE_CONFIG,
     TASK_CONFIG,
-    GLOBAL_SCRAPING_CONFIG
+    GLOBAL_SCRAPING_CONFIG,
+    get_enabled_scheduled_configs
 )
 
 # Set up logging
@@ -436,58 +437,64 @@ def process_subreddit_config(config: Dict, scrapes_dir: Path) -> Dict:
 
 
 @app.task(bind=True, max_retries=None)
-def scheduled_scrape_task(self, schedule_name: str):
-    """Enhanced scheduled scraping task for different subreddit schedules"""
+def scheduled_scrape_task(self, config_id: int = None):
+    """Enhanced scheduled scraping task for individual subreddit configurations"""
     try:
         # Check global controls first
         if not GLOBAL_SCRAPING_CONFIG.get("master_enabled", True):
             logger.info("Scraping is globally disabled via master_enabled flag")
-            return {"status": "skipped", "reason": "globally_disabled", "schedule_name": schedule_name}
+            return {"status": "skipped", "reason": "globally_disabled"}
         
         if not GLOBAL_SCRAPING_CONFIG.get("scheduled_scraping_enabled", True):
             logger.info("Scheduled scraping is disabled via scheduled_scraping_enabled flag")
-            return {"status": "skipped", "reason": "scheduled_scraping_disabled", "schedule_name": schedule_name}
+            return {"status": "skipped", "reason": "scheduled_scraping_disabled"}
         
         max_retries = TASK_CONFIG.get("max_retries", 3)
         retry_delay = TASK_CONFIG.get("retry_delay", 300)
         
-        logger.info(f"Starting scheduled Reddit scraping task: {schedule_name}")
+        logger.info(f"Starting scheduled Reddit scraping task for config ID: {config_id}")
 
         # Validate R2 configuration
         if not all([R2_ENDPOINT_URL, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY]):
             raise ValueError("R2 configuration is incomplete. Please check environment variables.")
 
-        # Get schedule configuration
-        if schedule_name not in SUBREDDIT_SCHEDULES:
-            raise ValueError(f"Unknown schedule: {schedule_name}")
+        # Get all enabled scheduled configs
+        enabled_configs = get_enabled_scheduled_configs()
         
-        schedule_config = SUBREDDIT_SCHEDULES[schedule_name]
-        
-        # Check if this specific schedule is enabled
-        if not schedule_config.get("enabled", True):
-            logger.info(f"Schedule '{schedule_name}' is disabled")
-            return {"status": "skipped", "reason": "schedule_disabled", "schedule_name": schedule_name}
-        
-        subreddit_configs = schedule_config["subreddits"]
+        if config_id is not None:
+            # Process specific config by ID
+            if config_id >= len(enabled_configs):
+                raise ValueError(f"Invalid config ID: {config_id}")
+            configs_to_process = [enabled_configs[config_id]]
+        else:
+            # Process all enabled configs (for manual runs)
+            configs_to_process = enabled_configs
 
         today = datetime.now().strftime("%Y-%m-%d")
         scrapes_dir = Path(f"scrapes/{today}")
 
         # Process each subreddit configuration
         results = []
-        for config in subreddit_configs:
+        for config in configs_to_process:
             result = process_subreddit_config(config, scrapes_dir)
             results.append(result)
 
-        # 4. Create archive of all scraped data
+        # Create archive of all scraped data
         successful_results = [r for r in results if r["status"] == "success"]
         
         if scrapes_dir.exists() and successful_results:
             # Check if archiving is enabled
             if GLOBAL_SCRAPING_CONFIG.get("create_archives_enabled", True):
-                archive_path = create_archive(scrapes_dir, archive_type=schedule_name)
+                # Create archive name based on configs processed
+                if len(configs_to_process) == 1:
+                    config = configs_to_process[0]
+                    archive_name = f"{config['name']}_{config['category']}"
+                else:
+                    archive_name = "multiple_configs"
+                
+                archive_path = create_archive(scrapes_dir, archive_type=archive_name)
 
-                # 5. Upload to R2 (if enabled)
+                # Upload to R2 (if enabled)
                 if GLOBAL_SCRAPING_CONFIG.get("upload_to_r2_enabled", True):
                     # Generate timestamp for unique naming
                     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
@@ -497,44 +504,20 @@ def scheduled_scrape_task(self, schedule_name: str):
                     
                     # Create subreddit path component
                     if len(subreddit_names) == 1:
-                        # Single subreddit - use the subreddit name directly
                         subreddit_path = subreddit_names[0]
                     else:
-                        # Multiple subreddits - create a combined name
-                        subreddit_path = "_".join(sorted(subreddit_names))
-                        # If the combined name is too long, use a hash or truncate
+                        subreddit_path = "_".join(sorted(set(subreddit_names)))
                         if len(subreddit_path) > 100:
-                            subreddit_hash = hashlib.md5("_".join(sorted(subreddit_names)).encode()).hexdigest()[:8]
+                            subreddit_hash = hashlib.md5("_".join(sorted(set(subreddit_names))).encode()).hexdigest()[:8]
                             subreddit_path = f"multi_subreddits_{subreddit_hash}"
                     
-                    # Use different naming patterns based on schedule type
-                    if schedule_name == "hourly_hot_scrapes":
-                        # For hourly scrapes, include hour-minute to prevent overwrites
-                        object_key = f"{schedule_name}_scrapes/{subreddit_path}/{today}/reddit_scrapes_{schedule_name}_{timestamp}.zip"
-                    elif schedule_name == "daily_scrapes":
-                        # For daily scrapes, use date only but add timestamp if multiple runs per day
-                        base_object_key = f"{schedule_name}_scrapes/{subreddit_path}/{today}/reddit_scrapes_{schedule_name}_{today}.zip"
-                        
-                        # Check if we need to add timestamp (for retries or multiple runs)
-                        # This is a simple approach - in production you might want to check R2 directly
-                        try:
-                            r2_client = get_r2_client()
-                            r2_client.head_object(Bucket=R2_BUCKET_NAME, Key=base_object_key)
-                            # If file exists, add timestamp to avoid overwrite
-                            object_key = f"{schedule_name}_scrapes/{subreddit_path}/{today}/reddit_scrapes_{schedule_name}_{timestamp}.zip"
-                            logger.info(f"Daily scrape file already exists, using timestamped name: {object_key}")
-                        except:
-                            # File doesn't exist, use base name
-                            object_key = base_object_key
-                    else:
-                        # For other schedules (weekly, custom), use timestamp for safety
-                        object_key = f"{schedule_name}_scrapes/{subreddit_path}/{today}/reddit_scrapes_{schedule_name}_{timestamp}.zip"
+                    object_key = f"scheduled_scrapes/{subreddit_path}/{today}/reddit_scrapes_{timestamp}.zip"
                     
                     # Build metadata for upload
                     upload_metadata = {
-                        'schedule_name': schedule_name,
-                        'subreddits': ",".join(subreddit_names),  # Add subreddit list to metadata
-                        'subreddits_processed': len(subreddit_configs),
+                        'config_type': 'scheduled',
+                        'subreddits': ",".join(set(subreddit_names)),
+                        'configs_processed': len(configs_to_process),
                         'successful_scrapes': len(successful_results),
                         'skipped_scrapes': len([r for r in results if r["status"] == "skipped"]),
                         'total_submissions': sum(r.get("submissions_found", 0) for r in results),
@@ -553,7 +536,7 @@ def scheduled_scrape_task(self, schedule_name: str):
                 logger.info("Archive creation is disabled via configuration")
 
             if upload_success or not GLOBAL_SCRAPING_CONFIG.get("upload_to_r2_enabled", True):
-                logger.info(f"Successfully completed {schedule_name} scraping")
+                logger.info(f"Successfully completed scheduled scraping")
 
                 # Clean up local archive file if it was created and uploaded
                 if archive_path and upload_success:
@@ -562,7 +545,7 @@ def scheduled_scrape_task(self, schedule_name: str):
 
                 return {
                     "status": "success",
-                    "schedule_name": schedule_name,
+                    "config_id": config_id,
                     "date": today,
                     "archive_uploaded": object_key,
                     "archive_created": archive_path is not None,
@@ -576,60 +559,107 @@ def scheduled_scrape_task(self, schedule_name: str):
             else:
                 raise Exception("Failed to upload archive to R2")
         else:
-            logger.info(f"No successful scrapes or scrapes directory doesn't exist for {schedule_name}")
+            logger.info(f"No successful scrapes or scrapes directory doesn't exist")
             return {
                 "status": "completed_no_data",
-                "schedule_name": schedule_name,
+                "config_id": config_id,
                 "date": today,
                 "results": results,
                 "message": "No successful scrapes to process"
             }
 
-    except Exception as e:
-        logger.error(f"Scheduled task {schedule_name} failed: {e}")
-
-        # Retry logic
+    except Exception as exc:
+        logger.error(f"Scheduled scraping task failed: {exc}")
+        
+        # Handle retries
         if self.request.retries < max_retries:
-            logger.info(f"Retrying task {schedule_name} (attempt {self.request.retries + 1}/{max_retries})")
-            raise self.retry(countdown=retry_delay, exc=e)
+            logger.info(f"Retrying in {retry_delay} seconds (attempt {self.request.retries + 1}/{max_retries})")
+            raise self.retry(countdown=retry_delay, exc=exc)
         else:
-            logger.error(f"Max retries exceeded for {schedule_name}. Task failed permanently.")
+            logger.error(f"Scheduled scraping task failed after {max_retries} retries")
             return {
                 "status": "failed",
-                "schedule_name": schedule_name,
-                "error": str(e),
-                "date": datetime.now().strftime("%Y-%m-%d")
+                "config_id": config_id,
+                "error": str(exc),
+                "retries_exhausted": True
             }
 
 
-@app.task(bind=True, max_retries=3)
-def scrape_and_upload_to_r2(self):
-    """Legacy task for backward compatibility - now calls daily_scrapes"""
-    return scheduled_scrape_task.apply_async(args=["daily_scrapes"]).get()
-
-# Individual scheduled tasks
-@app.task(bind=True)
+# Legacy task functions for backward compatibility with celery beat
+@app.task(bind=True, max_retries=None)
 def daily_scrape_task(self):
-    """Daily scraping task"""
-    return scheduled_scrape_task.apply_async(args=["daily_scrapes"]).get()
+    """Legacy task - runs all daily configs for backward compatibility"""
+    enabled_configs = get_enabled_scheduled_configs()
+    daily_configs = []
+    
+    # Find configs that look like daily schedules (run every day)
+    for i, config in enumerate(enabled_configs):
+        schedule = config.get('schedule')
+        if hasattr(schedule, 'hour') and hasattr(schedule, 'minute'):
+            # This is a crontab that runs daily if no day restrictions
+            if not hasattr(schedule, 'day_of_week') or schedule.day_of_week is None:
+                if not hasattr(schedule, 'day_of_month') or schedule.day_of_month is None:
+                    daily_configs.append(i)
+    
+    if daily_configs:
+        # Run the first daily config found
+        return scheduled_scrape_task.apply_async(args=[daily_configs[0]]).get()
+    return {"status": "no_daily_configs_found"}
 
 
-@app.task(bind=True)
+@app.task(bind=True, max_retries=None)
 def weekly_scrape_task(self):
-    """Weekly comprehensive scraping task"""
-    return scheduled_scrape_task.apply_async(args=["weekly_scrapes"]).get()
+    """Legacy task - runs all weekly configs for backward compatibility"""
+    enabled_configs = get_enabled_scheduled_configs()
+    weekly_configs = []
+    
+    # Find configs that have day_of_week set (weekly schedules)
+    for i, config in enumerate(enabled_configs):
+        schedule = config.get('schedule')
+        if hasattr(schedule, 'day_of_week') and schedule.day_of_week is not None:
+            weekly_configs.append(i)
+    
+    if weekly_configs:
+        # Run the first weekly config found
+        return scheduled_scrape_task.apply_async(args=[weekly_configs[0]]).get()
+    return {"status": "no_weekly_configs_found"}
 
 
-@app.task(bind=True)
+@app.task(bind=True, max_retries=None)
 def hourly_hot_scrape_task(self):
-    """Hourly hot posts scraping task"""
-    return scheduled_scrape_task.apply_async(args=["hourly_hot_scrapes"]).get()
+    """Legacy task - runs all hourly configs for backward compatibility"""
+    enabled_configs = get_enabled_scheduled_configs()
+    hourly_configs = []
+    
+    # Find configs that run every hour (minute=0, no hour specified or hour='*')
+    for i, config in enumerate(enabled_configs):
+        schedule = config.get('schedule')
+        if hasattr(schedule, 'minute') and schedule.minute == 0:
+            if not hasattr(schedule, 'hour') or schedule.hour == '*' or schedule.hour is None:
+                hourly_configs.append(i)
+    
+    if hourly_configs:
+        # Run the first hourly config found
+        return scheduled_scrape_task.apply_async(args=[hourly_configs[0]]).get()
+    return {"status": "no_hourly_configs_found"}
 
 
-@app.task(bind=True)
+@app.task(bind=True, max_retries=None)
 def custom_interval_scrape_task(self):
-    """Custom interval scraping task"""
-    return scheduled_scrape_task.apply_async(args=["custom_interval_scrapes"]).get()
+    """Legacy task - runs configs with timedelta schedules for backward compatibility"""
+    enabled_configs = get_enabled_scheduled_configs()
+    interval_configs = []
+    
+    # Find configs that use timedelta schedules
+    for i, config in enumerate(enabled_configs):
+        schedule = config.get('schedule')
+        if hasattr(schedule, 'total_seconds'):  # This is a timedelta
+            interval_configs.append(i)
+    
+    if interval_configs:
+        # Run the first interval config found
+        return scheduled_scrape_task.apply_async(args=[interval_configs[0]]).get()
+    return {"status": "no_interval_configs_found"}
 
 
 # Manual scraping tasks
@@ -790,15 +820,21 @@ def get_scraping_status():
     active_tasks = inspect.active()
     scheduled_tasks = inspect.scheduled()
     
+    # Get enabled configs for status reporting
+    enabled_configs = get_enabled_scheduled_configs()
+    
     status = {
         "timestamp": datetime.now().isoformat(),
-        "available_schedules": list(SUBREDDIT_SCHEDULES.keys()),
+        "total_configs": len(SUBREDDIT_CONFIGS),
+        "enabled_configs": len(enabled_configs),
+        "subreddits": list(set(config['name'] for config in enabled_configs)),
         "active_tasks": active_tasks,
         "scheduled_tasks": scheduled_tasks,
         "configurations": {
             "comment_scraping": COMMENT_SCRAPING_CONFIG,
             "archive_config": ARCHIVE_CONFIG,
-            "task_config": TASK_CONFIG
+            "task_config": TASK_CONFIG,
+            "global_config": GLOBAL_SCRAPING_CONFIG
         }
     }
     

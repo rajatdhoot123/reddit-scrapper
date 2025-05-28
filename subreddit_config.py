@@ -13,120 +13,162 @@ GLOBAL_SCRAPING_CONFIG = {
     "create_archives_enabled": True,  # Enable/disable archive creation
 }
 
-# Enhanced subreddit configurations with scheduling support
-SUBREDDIT_SCHEDULES = {
-    # Daily scrapes
-    'daily_scrapes': {
-        'enabled': True,  # Toggle to enable/disable this entire schedule
-        'schedule': crontab(hour=23, minute=30),  # 11:30 PM UTC daily
-        'subreddits': [
-            {
-                "name": "CreditCardsIndia",
-                "category": "t",  # top posts
-                "n_results": 25,
-                "time_filter": "day",  # day, week, month, year, all
-                "enabled": True,  # Toggle for individual subreddit config
-                "options": {
-                    "csv": False,
-                    "rules": False,
-                    "auto_confirm": True
-                }
-            },
-            {
-                "name": "LifeProTips",
-                "category": "t",
-                "n_results": 25,
-                "time_filter": "day",
-                "enabled": True,  # Toggle for individual subreddit config
-                "options": {
-                    "csv": False,
-                    "rules": False,
-                    "auto_confirm": True
-                }
-            }
-        ]
+# Subreddit configurations with individual scheduling
+SUBREDDIT_CONFIGS = [
+    # Daily top posts - CreditCardsIndia
+    {
+        "name": "CreditCardsIndia",
+        "category": "t",  # top posts
+        "n_results": 25,
+        "time_filter": "day",  # day, week, month, year, all
+        "enabled": True,  # Toggle for individual subreddit config
+        "schedule": crontab(hour=23, minute=30),  # 11:30 PM UTC daily
+        "options": {
+            "csv": False,
+            "rules": False,
+            "auto_confirm": True
+        }
     },
-
-    # Weekly comprehensive scrapes
-    'weekly_scrapes': {
-        'enabled': False,  # Toggle to enable/disable this entire schedule
-        # Monday 2:00 AM UTC
-        'schedule': crontab(hour=2, minute=0, day_of_week=1),
-        'subreddits': [
-            {
-                "name": "CreditCardsIndia",
-                "category": "t",  # top posts
-                "n_results": 100,
-                "time_filter": "week",
-                "enabled": True,  # Toggle for individual subreddit config
-                "options": {
-                    "csv": False,
-                    "rules": True,
-                    "auto_confirm": True
-                }
-            },
-            {
-                "name": "IndiaInvestments",
-                "category": "t",
-                "n_results": 50,
-                "time_filter": "week",
-                "enabled": True,  # Toggle for individual subreddit config
-                "options": {
-                    "csv": False,
-                    "auto_confirm": True
-                }
-            },
-            {
-                "name": "PersonalFinanceIndia",
-                "category": "t",
-                "n_results": 50,
-                "time_filter": "week",
-                "enabled": False,  # Example: Disabled subreddit config
-                "options": {
-                    "csv": False,
-                    "auto_confirm": True
-                }
-            }
-        ]
+    
+    # Daily top posts - LifeProTips
+    {
+        "name": "LifeProTips",
+        "category": "t",
+        "n_results": 25,
+        "time_filter": "day",
+        "enabled": True,
+        "schedule": crontab(hour=23, minute=45),  # 11:45 PM UTC daily (15 min after CreditCardsIndia)
+        "options": {
+            "csv": False,
+            "rules": False,
+            "auto_confirm": True
+        }
     },
-
-    # Hourly hot posts for active monitoring
-    'hourly_hot_scrapes': {
-        # Example: Disabled schedule (too frequent for some use cases)
-        'enabled': True,
-        'schedule': crontab(minute=0),  # Every hour at minute 0
-        'subreddits': [
-            {
-                "name": "CreditCardsIndia",
-                "category": "h",  # hot posts
-                "n_results": 10,
-                "enabled": True,  # Toggle for individual subreddit config
-                "options": {
-                    "csv": False,
-                    "auto_confirm": True
-                }
-            }
-        ]
+    
+    # Weekly comprehensive scrape - CreditCardsIndia
+    {
+        "name": "CreditCardsIndia",
+        "category": "t",
+        "n_results": 100,
+        "time_filter": "week",
+        "enabled": True,
+        "schedule": crontab(hour=2, minute=0, day_of_week=1),  # Monday 2:00 AM UTC
+        "options": {
+            "csv": False,
+            "rules": True,
+            "auto_confirm": True
+        }
     },
-
-    # Custom interval scrapes
-    'custom_interval_scrapes': {
-        'enabled': False,  # Toggle to enable/disable this entire schedule
-        'schedule': timedelta(hours=6),  # Every 6 hours
-        'subreddits': [
-            {
-                "name": "CreditCardsIndia",
-                "category": "n",  # new posts
-                "n_results": 30,
-                "enabled": True,  # Toggle for individual subreddit config
-                "options": {
-                    "csv": False,
-                    "auto_confirm": True
-                }
-            }
-        ]
+    
+    # Weekly scrape - IndiaInvestments
+    {
+        "name": "IndiaInvestments",
+        "category": "t",
+        "n_results": 50,
+        "time_filter": "week",
+        "enabled": True,
+        "schedule": crontab(hour=2, minute=30, day_of_week=1),  # Monday 2:30 AM UTC
+        "options": {
+            "csv": False,
+            "auto_confirm": True
+        }
+    },
+    
+    # Weekly scrape - PersonalFinanceIndia (disabled example)
+    {
+        "name": "PersonalFinanceIndia",
+        "category": "t",
+        "n_results": 50,
+        "time_filter": "week",
+        "enabled": False,  # Disabled subreddit config
+        "schedule": crontab(hour=3, minute=0, day_of_week=1),  # Monday 3:00 AM UTC
+        "options": {
+            "csv": False,
+            "auto_confirm": True
+        }
+    },
+    
+    # Hourly hot posts - CreditCardsIndia
+    {
+        "name": "CreditCardsIndia",
+        "category": "h",  # hot posts
+        "n_results": 10,
+        "enabled": True,
+        "schedule": crontab(minute=0),  # Every hour at minute 0
+        "options": {
+            "csv": False,
+            "auto_confirm": True
+        }
+    },
+    
+    # Custom interval using timedelta - CreditCardsIndia new posts
+    {
+        "name": "CreditCardsIndia",
+        "category": "n",  # new posts
+        "n_results": 30,
+        "enabled": False,  # Disabled for now
+        "schedule": timedelta(hours=6),  # Every 6 hours
+        "options": {
+            "csv": False,
+            "auto_confirm": True
+        }
+    },
+    
+    # Multiple daily scrapes for different subreddits at different times
+    {
+        "name": "MachineLearning",
+        "category": "t",
+        "n_results": 20,
+        "time_filter": "day",
+        "enabled": True,
+        "schedule": crontab(hour=8, minute=0),  # 8:00 AM UTC
+        "options": {
+            "csv": False,
+            "auto_confirm": True
+        }
+    },
+    
+    {
+        "name": "Python",
+        "category": "h",
+        "n_results": 15,
+        "enabled": True,
+        "schedule": crontab(hour=12, minute=30),  # 12:30 PM UTC
+        "options": {
+            "csv": False,
+            "auto_confirm": True
+        }
+    },
+    
+    # Weekend-only scrapes
+    {
+        "name": "WeekendWarrior",
+        "category": "t",
+        "n_results": 30,
+        "time_filter": "day",
+        "enabled": True,
+        "schedule": crontab(hour=10, minute=0, day_of_week=[6, 0]),  # Saturday and Sunday 10:00 AM
+        "options": {
+            "csv": False,
+            "auto_confirm": True
+        }
+    },
+    
+    # Monthly deep dive
+    {
+        "name": "DataScience",
+        "category": "t",
+        "n_results": 200,
+        "time_filter": "month",
+        "enabled": True,
+        "schedule": crontab(hour=4, minute=0, day_of_month=1),  # 1st day of every month at 4:00 AM
+        "options": {
+            "csv": True,  # Enable CSV for monthly comprehensive scrapes
+            "rules": True,
+            "auto_confirm": True
+        }
     }
-}
+]
 
 # Additional subreddit configurations for manual/on-demand scraping
 MANUAL_SUBREDDIT_CONFIGS = [
@@ -189,3 +231,23 @@ TASK_CONFIG = {
     "timeout": 300,  # 5 minutes per scraping operation
     "max_concurrent_tasks": 2
 }
+
+# Helper function to get enabled scheduled configs
+def get_enabled_scheduled_configs():
+    """Return only enabled subreddit configurations that have schedules."""
+    return [config for config in SUBREDDIT_CONFIGS if config.get('enabled', False) and 'schedule' in config]
+
+# Helper function to get configs by schedule type
+def get_configs_by_schedule_pattern(pattern_func):
+    """
+    Get configs that match a specific schedule pattern.
+    pattern_func should take a crontab/timedelta and return True/False
+    """
+    enabled_configs = get_enabled_scheduled_configs()
+    return [config for config in enabled_configs if pattern_func(config['schedule'])]
+
+# Helper function to get unique subreddit names
+def get_unique_subreddit_names():
+    """Get all unique subreddit names from enabled configs."""
+    enabled_configs = get_enabled_scheduled_configs()
+    return list(set(config['name'] for config in enabled_configs))
