@@ -505,9 +505,12 @@ def process_subreddit_config_with_database(config: Dict, scrapes_dir: Path,
             # Generate a task ID for this processing session
             task_id = f"process_{result['subreddit']}_{result['category']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             
+            # Create serializable config (remove schedule fields)
+            config_serializable = make_config_serializable(config)
+            
             # Launch database task asynchronously
             database_task_result = database_only_task.apply_async(
-                args=[task_id, task_type, config, result, result.get("scrape_file_path")]
+                args=[task_id, task_type, config_serializable, result, result.get("scrape_file_path")]
             )
             
             # Add database task info to result
