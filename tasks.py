@@ -9,7 +9,7 @@ import shutil
 import hashlib
 from datetime import datetime
 from pathlib import Path
-from celery import Celery
+from celery import current_app
 from celery.utils.log import get_task_logger
 from dotenv import load_dotenv
 import subprocess
@@ -32,6 +32,19 @@ from subreddit_config import (
     GLOBAL_SCRAPING_CONFIG,
     get_enabled_scheduled_configs
 )
+
+# Import database integration
+try:
+    from database_integration import (
+        get_database_processor, save_scraping_results_to_db,
+        ScrapingDataProcessor
+    )
+    DATABASE_INTEGRATION_AVAILABLE = True
+    logger_db = get_task_logger("database_integration")
+except ImportError as e:
+    DATABASE_INTEGRATION_AVAILABLE = False
+    logger_db = None
+    print(f"Database integration not available: {e}")
 
 # Set up logging
 logger = get_task_logger(__name__)
@@ -426,7 +439,8 @@ def process_subreddit_config(config: Dict, scrapes_dir: Path) -> Dict:
                 logger.info(f"Waiting {delay:.1f} seconds before next submission...")
                 time.sleep(delay)
 
-    return {
+    # 4. Save to database if integration is available
+    result = {
         "status": "success",
         "subreddit": subreddit,
         "category": category,
@@ -434,6 +448,28 @@ def process_subreddit_config(config: Dict, scrapes_dir: Path) -> Dict:
         "comments_scraped": comments_scraped,
         "scrape_file": str(scrape_file)
     }
+    
+    if DATABASE_INTEGRATION_AVAILABLE:
+        try:
+            db_processor = get_database_processor()
+            if db_processor:
+                # Generate a task ID for this processing session
+                task_id = f"process_{subreddit}_{category}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                
+                save_scraping_results_to_db(
+                    processor=db_processor,
+                    task_id=task_id,
+                    task_type="scheduled",  # This will be overridden in the calling function if needed
+                    config=config,
+                    result=result,
+                    scrape_file=scrape_file
+                )
+                logger.info(f"Saved scraping data to database for r/{subreddit}")
+        except Exception as e:
+            logger.error(f"Failed to save to database: {e}")
+            # Don't fail the entire process if database save fails
+    
+    return result
 
 
 def generate_unique_object_key(configs_to_process: List[Dict], scrape_type: str, 
@@ -600,6 +636,21 @@ def scheduled_scrape_task(self, config_id: int = None):
 
                 # Clean up local archive file if it was created and uploaded
                 if archive_path and upload_success:
+                    # Save archive info to database before cleanup
+                    if DATABASE_INTEGRATION_AVAILABLE and object_key:
+                        try:
+                            db_processor = get_database_processor()
+                            if db_processor:
+                                db_processor.create_archive_record(
+                                    archive_path=archive_path,
+                                    archive_type="scheduled",
+                                    r2_object_key=object_key,
+                                    metadata=upload_metadata
+                                )
+                                logger.info("Saved archive information to database")
+                        except Exception as e:
+                            logger.error(f"Failed to save archive info to database: {e}")
+                    
                     archive_path.unlink()
                     logger.info("Cleaned up local archive file")
 
@@ -858,7 +909,6 @@ def manual_scrape_from_config():
 @app.task
 def get_scraping_status():
     """Get the current status of all scraping schedules"""
-    from celery import current_app
     
     # Get active tasks
     inspect = current_app.control.inspect()
