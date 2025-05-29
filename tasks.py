@@ -1131,8 +1131,11 @@ def scheduled_scrape_task_modular(self, config_id: int = None):
             
             # Launch independent archive and upload task
             try:
+                # Create serializable configs (remove schedule fields)
+                configs_serializable = [make_config_serializable(config) for config in configs_to_process]
+                
                 upload_task = archive_and_upload_task.apply_async(
-                    args=[str(scrapes_dir), archive_type, None, configs_to_process, results, upload_metadata, True]
+                    args=[str(scrapes_dir), archive_type, None, configs_serializable, results, upload_metadata, True]
                 )
                 
                 # Wait for upload task to complete
