@@ -59,6 +59,25 @@ except ImportError as e:
 # Set up logging
 logger = get_task_logger(__name__)
 
+# Helper function to make config objects JSON-serializable
+def make_config_serializable(config: Dict) -> Dict:
+    """
+    Create a JSON-serializable copy of a config object by removing fields that contain
+    non-serializable objects like crontab instances.
+    """
+    serializable_config = {}
+    for key, value in config.items():
+        # Skip schedule field as it contains crontab objects which are not JSON serializable
+        if key == 'schedule':
+            continue
+        # Skip any other potentially problematic fields
+        elif hasattr(value, '__dict__') and not isinstance(value, (str, int, float, bool, list, dict, type(None))):
+            # Skip complex objects that might not be serializable
+            continue
+        else:
+            serializable_config[key] = value
+    return serializable_config
+
 # R2/S3 Configuration
 R2_ENDPOINT_URL = os.getenv('R2_ENDPOINT_URL')
 R2_ACCESS_KEY_ID = os.getenv('R2_ACCESS_KEY_ID')
@@ -453,6 +472,9 @@ def process_subreddit_config(config: Dict, scrapes_dir: Path) -> Dict:
                 time.sleep(delay)
 
     # Return result with all necessary information for separate database processing
+    # Create a serializable copy of config (exclude schedule field which contains crontab objects)
+    config_serializable = make_config_serializable(config)
+    
     result = {
         "status": "success",
         "subreddit": subreddit,
@@ -461,7 +483,7 @@ def process_subreddit_config(config: Dict, scrapes_dir: Path) -> Dict:
         "comments_scraped": comments_scraped,
         "scrape_file": str(scrape_file),
         "scrape_file_path": str(scrape_file),  # Keep both for compatibility
-        "config_used": config  # Include the config for database processing
+        "config_used": config_serializable  # Include the config for database processing (without schedule)
     }
     
     logger.info(f"Scraping completed for r/{subreddit}: {len(urls)} submissions, {comments_scraped} comments")
