@@ -15,17 +15,22 @@ fi
 source .env
 
 # Check if required Redis environment variables are set
-if [ -z "$REDIS_HOST" ] || [ -z "$REDIS_PORT" ] || [ -z "$REDIS_PASSWORD" ]; then
+if [ -z "$REDIS_HOST" ] || [ -z "$REDIS_PORT" ]; then
     echo "Error: Redis environment variables not set."
-    echo "Please ensure REDIS_HOST, REDIS_PORT, and REDIS_PASSWORD are configured in your .env file."
+    echo "Please ensure REDIS_HOST and REDIS_PORT are configured in your .env file."
     exit 1
 fi
 
-# Test Upstash Redis connection
-echo "Testing Upstash Redis connection..."
-REDIS_URL="rediss://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}?ssl_cert_reqs=none"
+# Test local Redis connection
+echo "Testing local Redis connection..."
+REDIS_URL="redis://${REDIS_HOST}:${REDIS_PORT}"
 
-# Use Python to test the Redis connection since redis-cli might not support rediss://
+# Add password to URL if provided
+if [ ! -z "$REDIS_PASSWORD" ]; then
+    REDIS_URL="redis://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}"
+fi
+
+# Use Python to test the Redis connection
 python3 -c "
 import redis
 import sys
@@ -37,27 +42,27 @@ try:
     url = '$REDIS_URL'
     parsed = urlparse(url)
     
-    # Create Redis connection with SSL
+    # Create Redis connection for local Redis (no SSL)
     r = redis.Redis(
         host=parsed.hostname,
         port=parsed.port,
-        password=parsed.password,
-        ssl=True,
-        ssl_cert_reqs=None,
+        password=parsed.password if parsed.password else None,
         decode_responses=True
     )
     
     # Test the connection
     r.ping()
-    print('✓ Upstash Redis connection successful')
+    print('✓ Local Redis connection successful')
     sys.exit(0)
 except Exception as e:
-    print(f'✗ Upstash Redis connection failed: {e}')
+    print(f'✗ Local Redis connection failed: {e}')
+    print('Make sure Redis is running locally with: redis-server')
     sys.exit(1)
 "
 
 if [ $? -ne 0 ]; then
-    echo "Error: Cannot connect to Upstash Redis. Please check your Redis configuration."
+    echo "Error: Cannot connect to local Redis. Please check your Redis configuration and ensure Redis is running."
+    echo "To start Redis locally, run: redis-server"
     exit 1
 fi
 

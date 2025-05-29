@@ -11,7 +11,18 @@ load_dotenv()
 # Create Celery app
 app = Celery('reddit_scraper')
 
-connection_link = f"rediss://:{os.getenv('REDIS_PASSWORD')}@{os.getenv('REDIS_HOST')}:{os.getenv('REDIS_PORT')}?ssl_cert_reqs=none"
+# Construct Redis connection URL based on environment
+redis_host = os.getenv('REDIS_HOST', 'localhost')
+redis_port = os.getenv('REDIS_PORT', '6379')
+redis_password = os.getenv('REDIS_PASSWORD', '')
+
+# Check if we're using local Redis or cloud Redis
+if redis_password:
+    # Cloud Redis with SSL (like Upstash)
+    connection_link = f"rediss://:{redis_password}@{redis_host}:{redis_port}?ssl_cert_reqs=none"
+else:
+    # Local Redis without SSL
+    connection_link = f"redis://{redis_host}:{redis_port}"
 
 # Celery configuration
 app.conf.update(
