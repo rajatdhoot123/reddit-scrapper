@@ -23,6 +23,27 @@ from models import (
 # Set up logging
 logger = logging.getLogger(__name__)
 
+def convert_urs_category_to_db_category(category: str) -> str:
+    """Convert URS category (uppercase letter) to database CategoryType enum value (lowercase letter)"""
+    # URS uses uppercase letters, database expects lowercase
+    category_mapping = {
+        'H': 'h',  # Hot
+        'N': 'n',  # New
+        'T': 't',  # Top
+        'R': 'r',  # Rising
+        'C': 'c',  # Controversial
+        'S': 's',  # Search
+        # Also handle lowercase input
+        'h': 'h',
+        'n': 'n',
+        't': 't',
+        'r': 'r',
+        'c': 'c',
+        's': 's'
+    }
+    
+    return category_mapping.get(category, category.lower())
+
 class DatabaseManager:
     """Manages database connections and operations for Reddit scraping"""
     
@@ -88,7 +109,7 @@ class ScrapingDataProcessor:
                 task_id=task_id,
                 task_type=TaskType(task_type),
                 subreddit_id=subreddit.id,
-                category=CategoryType(category),
+                category=CategoryType(convert_urs_category_to_db_category(category)),
                 n_results=config.get('n_results'),
                 keywords=config.get('keywords'),
                 time_filter=TimeFilter(config['time_filter']) if config.get('time_filter') else None,

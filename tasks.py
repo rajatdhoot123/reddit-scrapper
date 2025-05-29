@@ -153,25 +153,29 @@ def scrape_subreddit(subreddit: str, category: str, n_results_or_keywords: Union
     if options is None:
         options = {}
     
+    # Convert category to uppercase for URS compatibility
+    category_upper = category.upper()
+    category_lower = category.lower()
+    
     # Build command description for logging
-    if category == "s":
+    if category_lower == "s":
         logger.info(f"Searching r/{subreddit} for '{n_results_or_keywords}' with time filter: {time_filter}")
     else:
-        logger.info(f"Scraping r/{subreddit} with category {category}, {n_results_or_keywords} results, time filter: {time_filter}")
+        logger.info(f"Scraping r/{subreddit} with category {category_upper}, {n_results_or_keywords} results, time filter: {time_filter}")
 
     original_dir = os.getcwd()
 
     try:
         os.chdir('urs')
         
-        # Build the base command
-        cmd_parts = ["poetry", "run", "python", "Urs.py", "-r", subreddit, category]
+        # Build the base command - use uppercase category for URS
+        cmd_parts = ["poetry", "run", "python", "Urs.py", "-r", subreddit, category_upper]
         
         # Add n_results or keywords
         cmd_parts.append(str(n_results_or_keywords))
         
         # Add time filter if specified (for top, controversial categories)
-        if time_filter and category in ["t", "c"]:
+        if time_filter and category_lower in ["t", "c"]:
             cmd_parts.append(time_filter)
         
         # Add optional flags
@@ -217,7 +221,7 @@ def scrape_subreddit(subreddit: str, category: str, n_results_or_keywords: Union
             os.chdir(original_dir)
 
         return get_latest_scrape_file(
-            subreddit, category, n_results_or_keywords, 
+            subreddit, category_upper, n_results_or_keywords, 
             time_filter, options.get("csv", False), options.get("rules", False)
         )
 
