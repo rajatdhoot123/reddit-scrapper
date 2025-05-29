@@ -487,7 +487,6 @@ def process_subreddit_config(config: Dict, scrapes_dir: Path) -> Dict:
         "submissions_found": len(urls),
         "comments_scraped": comments_scraped,
         "scrape_file": str(scrape_file),
-        "scrape_file_path": str(scrape_file),  # Keep both for compatibility
         "config_used": config_serializable  # Include the config for database processing (without schedule)
     }
     
@@ -628,7 +627,7 @@ def generate_unique_object_key(configs_to_process: List[Dict], scrape_type: str,
 
 @app.task(bind=True, max_retries=2)
 def database_only_task(self, task_id: str, task_type: str, config: Dict, 
-                      result: Dict, scrape_file_path: str = None):
+                      result: Dict, scrape_file: str = None):
     """Independent task to handle only database operations"""
     try:
         if not DATABASE_INTEGRATION_AVAILABLE:
@@ -642,7 +641,7 @@ def database_only_task(self, task_id: str, task_type: str, config: Dict,
             raise Exception("Could not initialize database processor")
         
         # Convert string path back to Path object if provided
-        scrape_file = Path(scrape_file_path) if scrape_file_path else None
+        scrape_file = Path(scrape_file) if scrape_file else None
         
         save_scraping_results_to_db(
             processor=db_processor,
@@ -804,8 +803,8 @@ def archive_and_upload_task(self, scrapes_dir_path: str, archive_type: str = "da
         if configs_processed:
             object_key = generate_unique_object_key(configs_processed, archive_type, today, timestamp, results)
         else:
-            # Fallback object key
-            object_key = f"{archive_type}_scrapes/{today}/{archive_type}_{timestamp}.zip"
+            # Require configs_processed for proper unified naming
+            raise ValueError("configs_processed is required for proper object key generation")
         
         # Upload the archive
         upload_result = upload_only_task.apply_async(
@@ -1046,7 +1045,7 @@ def scheduled_scrape_task_modular(self, config_id: int = None):
                     config_serializable = make_config_serializable(config)
                     
                     db_task = database_only_task.apply_async(
-                        args=[task_id, "scheduled", config_serializable, result, result.get("scrape_file_path")]
+                        args=[task_id, "scheduled", config_serializable, result, result.get("scrape_file")]
                     )
                     
                     database_tasks.append({
