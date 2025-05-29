@@ -325,8 +325,8 @@ def create_archive(scrapes_dir: Path, archive_type: str = "daily",
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
         archive_name = generate_unified_filename(configs_processed, archive_type, today, timestamp)
     else:
-        # Fallback to legacy naming for backward compatibility
-        archive_name = f"reddit_scrapes_{archive_type}_{today}.zip"
+        # Require configs_processed for proper naming
+        raise ValueError("Either custom_name or configs_processed must be provided for proper archive naming")
     
     archive_path = Path(archive_name)
     
