@@ -1102,7 +1102,7 @@ def scheduled_scrape_task_modular(self, config_id: int = None):
                     database_tasks.append({
                         "task_id": db_task.id,
                         "subreddit": result['subreddit'],
-                        "config": config
+                        "config": config_serializable
                     })
                     
                     logger.info(f"Launched database task {db_task.id} for r/{result['subreddit']}")
