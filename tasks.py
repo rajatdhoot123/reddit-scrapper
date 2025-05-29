@@ -1089,8 +1089,11 @@ def scheduled_scrape_task_modular(self, config_id: int = None):
                 try:
                     task_id = f"scheduled_{result['subreddit']}_{result['category']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                     
+                    # Create serializable config (remove schedule fields)
+                    config_serializable = make_config_serializable(config)
+                    
                     db_task = database_only_task.apply_async(
-                        args=[task_id, "scheduled", config, result, result.get("scrape_file_path")]
+                        args=[task_id, "scheduled", config_serializable, result, result.get("scrape_file_path")]
                     )
                     
                     database_tasks.append({
