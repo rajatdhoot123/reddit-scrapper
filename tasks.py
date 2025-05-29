@@ -602,7 +602,7 @@ def generate_unique_object_key(configs_to_process: List[Dict], scrape_type: str,
         }
         category_name = category_names.get(config["category"], config["category"])
         
-        return f"{scrape_type}_scrapes/{subreddit}/{category_name}/{today}/{base_filename}.zip"
+        return f"{scrape_type}_scrapes/{subreddit}/{category_name}/{base_filename}.zip"
     
     else:
         # Multiple configurations - simpler directory structure
@@ -618,7 +618,7 @@ def generate_unique_object_key(configs_to_process: List[Dict], scrape_type: str,
         else:
             subreddit_path = "multi_subreddits"
         
-        return f"{scrape_type}_scrapes/{subreddit_path}/multi_config/{today}/{base_filename}.zip"
+        return f"{scrape_type}_scrapes/{subreddit_path}/multi_config/{base_filename}.zip"
 
 
 # ================================

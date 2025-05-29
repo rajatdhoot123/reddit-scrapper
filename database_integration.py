@@ -16,7 +16,7 @@ from sqlalchemy import text
 from models import (
     Base, Subreddit, ScrapeSession, Submission, Comment, Archive, 
     ProcessingQueue, TaskMetrics, ScrapeStatus, CategoryType, TaskType, 
-    TimeFilter, ProcessingStatus, create_submission_from_reddit_data,
+    TimeFilter, ProcessingStatus, 
     create_comment_from_reddit_data, add_to_processing_queue
 )
 
@@ -80,13 +80,39 @@ class DatabaseManager:
             session.close()
     
     def get_or_create_subreddit(self, session, name: str, **kwargs) -> Subreddit:
-        """Get or create a subreddit record"""
+        """Get or create a subreddit record with enhanced metadata"""
         subreddit = session.query(Subreddit).filter_by(name=name).first()
         if not subreddit:
-            subreddit = Subreddit(name=name, **kwargs)
+            # Create subreddit with provided metadata
+            subreddit_data = {
+                'name': name,
+                'display_name': kwargs.get('display_name', name),
+                'description': kwargs.get('description'),
+                'subscribers': kwargs.get('subscribers'),
+                'created_utc': kwargs.get('created_utc'),
+                'is_active': kwargs.get('is_active', True)
+            }
+            
+            # Remove None values
+            subreddit_data = {k: v for k, v in subreddit_data.items() if v is not None}
+            
+            subreddit = Subreddit(**subreddit_data)
             session.add(subreddit)
             session.flush()
-            logger.info(f"Created new subreddit record: r/{name}")
+            logger.info(f"Created new subreddit record: r/{name} with metadata")
+        else:
+            # Update existing subreddit with new metadata if provided
+            updated = False
+            for key, value in kwargs.items():
+                if value is not None and hasattr(subreddit, key):
+                    if getattr(subreddit, key) != value:
+                        setattr(subreddit, key, value)
+                        updated = True
+            
+            if updated:
+                subreddit.last_scraped_at = datetime.now()
+                logger.debug(f"Updated subreddit metadata for r/{name}")
+        
         return subreddit
 
 
@@ -162,6 +188,17 @@ class ScrapingDataProcessor:
                 with open(json_file_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 
+                # Extract subreddit name from scrape_settings
+                scrape_settings = data.get('scrape_settings', {})
+                subreddit_name = scrape_settings.get('subreddit')
+                
+                if not subreddit_name:
+                    logger.error("No subreddit name found in scrape_settings")
+                    return 0
+                
+                # Get or create subreddit record with basic info
+                subreddit = self.db.get_or_create_subreddit(session, subreddit_name)
+                
                 # Handle both direct data array and wrapped data structure
                 submissions_data = data.get('data', data) if isinstance(data, dict) else data
                 
@@ -176,9 +213,9 @@ class ScrapingDataProcessor:
                             logger.debug(f"Submission {submission_data['id']} already exists, skipping")
                             continue
                         
-                        # Create submission record
-                        submission = create_submission_from_reddit_data(
-                            session, submission_data, session_id
+                        # Create submission record using the subreddit we already have
+                        submission = self._create_submission_from_data(
+                            session, submission_data, session_id, subreddit.id
                         )
                         session.add(submission)
                         
@@ -215,6 +252,35 @@ class ScrapingDataProcessor:
                 )
                 
         return processed_count
+    
+    def _create_submission_from_data(self, session, submission_data: dict, 
+                                   scrape_session_id: str, subreddit_id: int) -> Submission:
+        """Create a Submission record from scraped data"""
+        
+        submission = Submission(
+            reddit_id=submission_data['id'],
+            title=submission_data['title'],
+            url=submission_data['url'],
+            permalink=submission_data['permalink'],
+            selftext=submission_data.get('selftext', ''),
+            author=submission_data.get('author', '[deleted]'),
+            created_utc=datetime.fromisoformat(submission_data['created_utc']),
+            score=submission_data.get('score', 0),
+            upvote_ratio=submission_data.get('upvote_ratio'),
+            num_comments=submission_data.get('num_comments', 0),
+            is_self=submission_data.get('is_self', False),
+            is_original_content=submission_data.get('is_original_content', False),
+            is_nsfw=submission_data.get('nsfw', False),
+            is_spoiler=submission_data.get('spoiler', False),
+            is_stickied=submission_data.get('stickied', False),
+            is_locked=submission_data.get('locked', False),
+            distinguished=submission_data.get('distinguished'),
+            link_flair_text=submission_data.get('link_flair_text'),
+            subreddit_id=subreddit_id,
+            scrape_session_id=scrape_session_id
+        )
+        
+        return submission
     
     def process_scraped_comments(self, submission_reddit_id: str, comments_file_path: Path) -> int:
         """Process scraped comments from JSON file and save to database"""
@@ -406,13 +472,25 @@ def save_scraping_results_to_db(processor: ScrapingDataProcessor, task_id: str,
         if scrape_file and scrape_file.exists():
             submissions_count = processor.process_scraped_submissions(session_id, scrape_file)
             
-            # Extract and process comments if available
-            urls = extract_submission_urls_from_file(scrape_file)
-            for url in urls:
-                reddit_id = extract_reddit_id_from_url(url)
-                comments_file = find_comments_file_for_submission(reddit_id)
-                if comments_file:
-                    processor.process_scraped_comments(reddit_id, comments_file)
+            # Extract and process comments if available - IMPROVED VERSION
+            submissions_data = extract_submissions_data_from_file(scrape_file)
+            comments_processed = 0
+            
+            for submission in submissions_data:
+                reddit_id = submission.get('id')
+                
+                if reddit_id:
+                    # Find comment file by Reddit ID (much more reliable than title matching)
+                    comments_file = find_comments_file_by_reddit_id(reddit_id)
+                    
+                    if comments_file:
+                        processed = processor.process_scraped_comments(reddit_id, comments_file)
+                        comments_processed += processed
+                        logger.info(f"Processed {processed} comments for submission {reddit_id} from {comments_file}")
+                    else:
+                        logger.debug(f"No comments file found for submission {reddit_id}")
+            
+            logger.info(f"Total comments processed and saved to database: {comments_processed}")
         
         # Update session with final results
         processor.update_scrape_session_status(
@@ -426,6 +504,39 @@ def save_scraping_results_to_db(processor: ScrapingDataProcessor, task_id: str,
         
     except Exception as e:
         logger.error(f"Failed to save scraping results to database: {e}")
+
+
+def extract_submissions_data_from_file(json_file: Path) -> List[Dict[str, Any]]:
+    """Extract submissions data (list of dicts) from a JSON scrape file."""
+    if not json_file.exists():
+        logger.error(f"Scrape file not found for data extraction: {json_file}")
+        return []
+    try:
+        with open(json_file, 'r', encoding='utf-8') as f:
+            data_content = json.load(f)
+        
+        # Handle common URS structures:
+        # 1. {'scrape_settings': ..., 'data': [submissions]}
+        # 2. [submissions] (direct list)
+        extracted_data = data_content.get('data', data_content) if isinstance(data_content, dict) else data_content
+        
+        if not isinstance(extracted_data, list):
+            logger.warning(f"Expected a list of submissions from {json_file}, but found type {type(extracted_data)}. File content might be malformed or not a list of submissions.")
+            return []
+            
+        # Ensure all items in the list are dictionaries, as expected for submission data
+        if not all(isinstance(item, dict) for item in extracted_data):
+            logger.warning(f"Data extracted from {json_file} is a list, but not all items are dictionaries as expected for submissions.")
+            # Depending on strictness, you might want to filter non-dict items or return empty
+            return [item for item in extracted_data if isinstance(item, dict)]
+
+        return extracted_data
+    except json.JSONDecodeError as e:
+        logger.error(f"Error decoding JSON from {json_file}: {e}")
+        return []
+    except Exception as e:
+        logger.error(f"Error extracting submissions data from {json_file}: {e}")
+        return []
 
 
 def extract_submission_urls_from_file(json_file: Path) -> List[str]:
@@ -457,16 +568,37 @@ def extract_reddit_id_from_url(url: str) -> str:
     return ""
 
 
-def find_comments_file_for_submission(reddit_id: str) -> Optional[Path]:
-    """Find comments file for a specific submission"""
+def find_comments_file_by_reddit_id(reddit_id: str) -> Optional[Path]:
+    """Find comments file for a specific submission by Reddit ID (checking file content)"""
     today = datetime.now().strftime("%Y-%m-%d")
-    scrapes_dir = Path(f"scrapes/{today}")
+    comments_dir = Path(f"scrapes/{today}/comments")
     
-    # Look for comments files
-    for file_path in scrapes_dir.rglob("*.json"):
-        if reddit_id in file_path.name:
-            return file_path
+    if not comments_dir.exists():
+        return None
     
+    # Look through all comment files and check their content
+    for file_path in comments_dir.glob("*.json"):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # Check if the URL in scrape_settings contains our Reddit ID
+            url = data.get('scrape_settings', {}).get('url', '')
+            if reddit_id in url:
+                logger.debug(f"Found comment file for Reddit ID {reddit_id}: {file_path}")
+                return file_path
+                
+            # Also check permalink in submission_metadata as backup
+            permalink = data.get('data', {}).get('submission_metadata', {}).get('permalink', '')
+            if reddit_id in permalink:
+                logger.debug(f"Found comment file for Reddit ID {reddit_id} via permalink: {file_path}")
+                return file_path
+                
+        except (json.JSONDecodeError, IOError) as e:
+            logger.debug(f"Could not read comment file {file_path}: {e}")
+            continue
+    
+    logger.debug(f"No comment file found for Reddit ID: {reddit_id}")
     return None
 
 
