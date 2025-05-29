@@ -397,7 +397,7 @@ def upload_to_r2(file_path, object_key, config={}):
 
 
 def process_subreddit_config(config: Dict, scrapes_dir: Path) -> Dict:
-    """Process a single subreddit configuration"""
+    """Process a single subreddit configuration - SCRAPING ONLY"""
     # Check if this specific subreddit config is enabled
     if not config.get("enabled", True):
         logger.info(f"Skipping disabled subreddit config: r/{config['name']}")
@@ -452,35 +452,52 @@ def process_subreddit_config(config: Dict, scrapes_dir: Path) -> Dict:
                 logger.info(f"Waiting {delay:.1f} seconds before next submission...")
                 time.sleep(delay)
 
-    # 4. Save to database if integration is available
+    # Return result with all necessary information for separate database processing
     result = {
         "status": "success",
         "subreddit": subreddit,
         "category": category,
         "submissions_found": len(urls),
         "comments_scraped": comments_scraped,
-        "scrape_file": str(scrape_file)
+        "scrape_file": str(scrape_file),
+        "scrape_file_path": str(scrape_file),  # Keep both for compatibility
+        "config_used": config  # Include the config for database processing
     }
     
+    logger.info(f"Scraping completed for r/{subreddit}: {len(urls)} submissions, {comments_scraped} comments")
+    return result
+
+
+def process_subreddit_config_with_database(config: Dict, scrapes_dir: Path, 
+                                          task_type: str = "scheduled") -> Dict:
+    """Process a single subreddit configuration WITH database operations (legacy function)"""
+    # First do the scraping
+    result = process_subreddit_config(config, scrapes_dir)
+    
+    if result["status"] != "success":
+        return result
+    
+    # Then handle database operations if available
     if DATABASE_INTEGRATION_AVAILABLE:
         try:
-            db_processor = get_database_processor()
-            if db_processor:
-                # Generate a task ID for this processing session
-                task_id = f"process_{subreddit}_{category}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                
-                save_scraping_results_to_db(
-                    processor=db_processor,
-                    task_id=task_id,
-                    task_type="scheduled",  # This will be overridden in the calling function if needed
-                    config=config,
-                    result=result,
-                    scrape_file=scrape_file
-                )
-                logger.info(f"Saved scraping data to database for r/{subreddit}")
+            # Generate a task ID for this processing session
+            task_id = f"process_{result['subreddit']}_{result['category']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            # Launch database task asynchronously
+            database_task_result = database_only_task.apply_async(
+                args=[task_id, task_type, config, result, result.get("scrape_file_path")]
+            )
+            
+            # Add database task info to result
+            result["database_task_id"] = database_task_result.id
+            result["database_task_status"] = "launched"
+            
+            logger.info(f"Launched database task {database_task_result.id} for r/{result['subreddit']}")
+            
         except Exception as e:
-            logger.error(f"Failed to save to database: {e}")
-            # Don't fail the entire process if database save fails
+            logger.error(f"Failed to launch database task: {e}")
+            result["database_error"] = str(e)
+            # Don't fail the entire process if database task launch fails
     
     return result
 
@@ -556,6 +573,299 @@ def generate_unique_object_key(configs_to_process: List[Dict], scrape_type: str,
         
         return f"{scrape_type}_scrapes/{subreddit_path}/multi_config_{config_signature}/{today}/{scrape_type}_multi_{config_signature}_{timestamp}.zip"
 
+
+# ================================
+# INDEPENDENT TASK DEFINITIONS
+# ================================
+
+@app.task(bind=True, max_retries=2)
+def database_only_task(self, task_id: str, task_type: str, config: Dict, 
+                      result: Dict, scrape_file_path: str = None):
+    """Independent task to handle only database operations"""
+    try:
+        if not DATABASE_INTEGRATION_AVAILABLE:
+            logger.warning("Database integration not available, skipping database task")
+            return {"status": "skipped", "reason": "database_not_available"}
+        
+        logger.info(f"Starting database-only task for {config.get('name', 'unknown')}")
+        
+        db_processor = get_database_processor()
+        if not db_processor:
+            raise Exception("Could not initialize database processor")
+        
+        # Convert string path back to Path object if provided
+        scrape_file = Path(scrape_file_path) if scrape_file_path else None
+        
+        save_scraping_results_to_db(
+            processor=db_processor,
+            task_id=task_id,
+            task_type=task_type,
+            config=config,
+            result=result,
+            scrape_file=scrape_file
+        )
+        
+        logger.info(f"Database task completed successfully for {config.get('name')}")
+        return {
+            "status": "success",
+            "subreddit": config.get('name'),
+            "task_id": task_id,
+            "database_saved": True
+        }
+        
+    except Exception as e:
+        logger.error(f"Database task failed: {e}")
+        
+        if self.request.retries < self.max_retries:
+            logger.info(f"Retrying database task (attempt {self.request.retries + 1}/{self.max_retries})")
+            raise self.retry(countdown=60, exc=e)
+        else:
+            return {
+                "status": "failed",
+                "subreddit": config.get('name'),
+                "task_id": task_id,
+                "error": str(e),
+                "database_saved": False
+            }
+
+
+@app.task(bind=True, max_retries=2)
+def upload_only_task(self, archive_path: str, object_key: str, 
+                    upload_metadata: Dict = None, cleanup_after_upload: bool = True):
+    """Independent task to handle only upload operations"""
+    try:
+        if upload_metadata is None:
+            upload_metadata = {}
+            
+        logger.info(f"Starting upload-only task for {archive_path}")
+        
+        # Validate R2 configuration
+        if not all([R2_ENDPOINT_URL, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY]):
+            raise ValueError("R2 configuration is incomplete")
+        
+        if not GLOBAL_SCRAPING_CONFIG.get("upload_to_r2_enabled", True):
+            logger.info("R2 upload is disabled via configuration")
+            return {
+                "status": "skipped", 
+                "reason": "upload_disabled",
+                "file": archive_path
+            }
+        
+        # Convert string path back to Path object
+        file_path = Path(archive_path)
+        
+        if not file_path.exists():
+            raise FileNotFoundError(f"Archive file not found: {archive_path}")
+        
+        # Perform upload
+        upload_success = upload_to_r2(
+            file_path=file_path, 
+            object_key=object_key, 
+            config=upload_metadata
+        )
+        
+        if upload_success:
+            logger.info(f"Upload completed successfully: {object_key}")
+            
+            # Save archive info to database if available
+            if DATABASE_INTEGRATION_AVAILABLE:
+                try:
+                    db_processor = get_database_processor()
+                    if db_processor:
+                        db_processor.create_archive_record(
+                            archive_path=file_path,
+                            archive_type=upload_metadata.get('config_type', 'unknown'),
+                            r2_object_key=object_key,
+                            metadata=upload_metadata
+                        )
+                        logger.info("Saved archive information to database")
+                except Exception as e:
+                    logger.error(f"Failed to save archive info to database: {e}")
+            
+            # Clean up local file if requested
+            if cleanup_after_upload:
+                try:
+                    file_path.unlink()
+                    logger.info(f"Cleaned up local archive file: {archive_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to clean up local file: {e}")
+            
+            return {
+                "status": "success",
+                "file": archive_path,
+                "object_key": object_key,
+                "uploaded": True,
+                "cleaned_up": cleanup_after_upload
+            }
+        else:
+            raise Exception("Upload to R2 failed")
+            
+    except Exception as e:
+        logger.error(f"Upload task failed: {e}")
+        
+        if self.request.retries < self.max_retries:
+            logger.info(f"Retrying upload task (attempt {self.request.retries + 1}/{self.max_retries})")
+            raise self.retry(countdown=60, exc=e)
+        else:
+            return {
+                "status": "failed",
+                "file": archive_path,
+                "error": str(e),
+                "uploaded": False
+            }
+
+
+@app.task(bind=True, max_retries=2)  
+def archive_and_upload_task(self, scrapes_dir_path: str, archive_type: str = "daily",
+                          custom_name: str = None, configs_processed: List[Dict] = None,
+                          results: List[Dict] = None, upload_metadata: Dict = None,
+                          cleanup_after_upload: bool = True):
+    """Independent task to create archive and upload (combines archive creation and upload)"""
+    try:
+        if upload_metadata is None:
+            upload_metadata = {}
+            
+        logger.info(f"Starting archive and upload task for {scrapes_dir_path}")
+        
+        scrapes_dir = Path(scrapes_dir_path)
+        if not scrapes_dir.exists():
+            raise FileNotFoundError(f"Scrapes directory not found: {scrapes_dir_path}")
+        
+        # Check if archiving is enabled
+        if not GLOBAL_SCRAPING_CONFIG.get("create_archives_enabled", True):
+            logger.info("Archive creation is disabled via configuration")
+            return {
+                "status": "skipped",
+                "reason": "archiving_disabled",
+                "directory": scrapes_dir_path
+            }
+        
+        # Create archive
+        archive_path = create_archive(scrapes_dir, archive_type=archive_type, custom_name=custom_name)
+        
+        # Generate upload object key
+        today = datetime.now().strftime("%Y-%m-%d")
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        
+        if configs_processed:
+            object_key = generate_unique_object_key(configs_processed, archive_type, today, timestamp, results)
+        else:
+            # Fallback object key
+            object_key = f"{archive_type}_scrapes/{today}/{archive_type}_{timestamp}.zip"
+        
+        # Upload the archive
+        upload_result = upload_only_task.apply_async(
+            args=[str(archive_path), object_key, upload_metadata, cleanup_after_upload]
+        ).get()
+        
+        return {
+            "status": "success",
+            "archive_created": str(archive_path),
+            "upload_result": upload_result,
+            "object_key": object_key
+        }
+        
+    except Exception as e:
+        logger.error(f"Archive and upload task failed: {e}")
+        
+        if self.request.retries < self.max_retries:
+            logger.info(f"Retrying archive and upload task (attempt {self.request.retries + 1}/{self.max_retries})")
+            raise self.retry(countdown=60, exc=e)
+        else:
+            return {
+                "status": "failed",
+                "directory": scrapes_dir_path,
+                "error": str(e)
+            }
+
+
+@app.task(bind=True, max_retries=2)
+def scrape_and_upload_to_r2(self):
+    """Legacy task for backward compatibility - scrapes and uploads to R2"""
+    try:
+        logger.info("Starting legacy scrape_and_upload_to_r2 task")
+        
+        # Check global controls
+        if not GLOBAL_SCRAPING_CONFIG.get("master_enabled", True):
+            logger.info("Scraping is globally disabled via master_enabled flag")
+            return {"status": "skipped", "reason": "globally_disabled"}
+        
+        # Run a default configuration - use first enabled config or fallback
+        enabled_configs = get_enabled_scheduled_configs()
+        
+        if enabled_configs:
+            # Use the scheduled_scrape_task for the first enabled config
+            result = scheduled_scrape_task.apply_async(args=[0]).get()
+            logger.info("Legacy task completed using scheduled_scrape_task")
+            return result
+        else:
+            # Fallback to a basic CreditCardsIndia scrape
+            logger.info("No enabled configs found, running fallback scrape")
+            
+            today = datetime.now().strftime("%Y-%m-%d")
+            scrapes_dir = Path(f"scrapes/{today}")
+            
+            # Create a basic config
+            fallback_config = {
+                "name": "CreditCardsIndia",
+                "category": "t",
+                "n_results": 25,
+                "time_filter": "day",
+                "options": {"csv": False, "auto_confirm": True}
+            }
+            
+            # Process the fallback config
+            result = process_subreddit_config(fallback_config, scrapes_dir)
+            
+            if result["status"] == "success" and scrapes_dir.exists():
+                # Create and upload archive
+                archive_path = create_archive(scrapes_dir, archive_type="legacy")
+                
+                timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+                object_key = f"legacy_scrapes/CreditCardsIndia/{today}/legacy_{timestamp}.zip"
+                
+                upload_metadata = {
+                    'scrape_type': 'legacy',
+                    'subreddit': 'CreditCardsIndia',
+                    'fallback_run': True
+                }
+                
+                upload_success = upload_to_r2(
+                    file_path=archive_path, 
+                    object_key=object_key, 
+                    config=upload_metadata
+                )
+                
+                if upload_success:
+                    archive_path.unlink()  # Clean up
+                    logger.info("Legacy scrape and upload completed successfully")
+                
+                return {
+                    "status": "success",
+                    "type": "fallback",
+                    "result": result,
+                    "archive_uploaded": object_key if upload_success else None
+                }
+            
+            return {
+                "status": "completed",
+                "type": "fallback",
+                "result": result,
+                "message": "Fallback scrape completed but no data to archive"
+            }
+            
+    except Exception as e:
+        logger.error(f"Legacy scrape_and_upload_to_r2 task failed: {e}")
+        return {
+            "status": "failed",
+            "error": str(e),
+            "type": "legacy"
+        }
+
+
+# ================================
+# MAIN SCHEDULED TASK DEFINITIONS
+# ================================
 
 @app.task(bind=True, max_retries=None)
 def scheduled_scrape_task(self, config_id: int = None):
@@ -706,6 +1016,163 @@ def scheduled_scrape_task(self, config_id: int = None):
                 "config_id": config_id,
                 "error": str(exc),
                 "retries_exhausted": True
+            }
+
+
+@app.task(bind=True, max_retries=None)
+def scheduled_scrape_task_modular(self, config_id: int = None):
+    """NEW: Modular scheduled scraping task using independent database and upload tasks"""
+    try:
+        # Check global controls first
+        if not GLOBAL_SCRAPING_CONFIG.get("master_enabled", True):
+            logger.info("Scraping is globally disabled via master_enabled flag")
+            return {"status": "skipped", "reason": "globally_disabled"}
+        
+        if not GLOBAL_SCRAPING_CONFIG.get("scheduled_scraping_enabled", True):
+            logger.info("Scheduled scraping is disabled via scheduled_scraping_enabled flag")
+            return {"status": "skipped", "reason": "scheduled_scraping_disabled"}
+        
+        max_retries = TASK_CONFIG.get("max_retries", 3)
+        retry_delay = TASK_CONFIG.get("retry_delay", 300)
+        
+        logger.info(f"Starting modular scheduled Reddit scraping task for config ID: {config_id}")
+
+        # Get all enabled scheduled configs
+        enabled_configs = get_enabled_scheduled_configs()
+        
+        if config_id is not None:
+            # Process specific config by ID
+            if config_id >= len(enabled_configs):
+                raise ValueError(f"Invalid config ID: {config_id}")
+            configs_to_process = [enabled_configs[config_id]]
+        else:
+            # Process all enabled configs (for manual runs)
+            configs_to_process = enabled_configs
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        scrapes_dir = Path(f"scrapes/{today}")
+
+        # STEP 1: SCRAPING ONLY - Process each subreddit configuration
+        logger.info("Step 1: Starting scraping phase")
+        results = []
+        database_tasks = []
+        
+        for config in configs_to_process:
+            # Scrape only (no database operations)
+            result = process_subreddit_config(config, scrapes_dir)
+            results.append(result)
+            
+            # STEP 2: LAUNCH INDEPENDENT DATABASE TASKS for successful scrapes
+            if result["status"] == "success" and DATABASE_INTEGRATION_AVAILABLE:
+                try:
+                    task_id = f"scheduled_{result['subreddit']}_{result['category']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    
+                    db_task = database_only_task.apply_async(
+                        args=[task_id, "scheduled", config, result, result.get("scrape_file_path")]
+                    )
+                    
+                    database_tasks.append({
+                        "task_id": db_task.id,
+                        "subreddit": result['subreddit'],
+                        "config": config
+                    })
+                    
+                    logger.info(f"Launched database task {db_task.id} for r/{result['subreddit']}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to launch database task for r/{result['subreddit']}: {e}")
+
+        # STEP 3: ARCHIVE AND UPLOAD PHASE
+        successful_results = [r for r in results if r["status"] == "success"]
+        
+        upload_task_result = None
+        if scrapes_dir.exists() and successful_results:
+            logger.info("Step 3: Starting archive and upload phase")
+            
+            # Build upload metadata
+            upload_metadata = {
+                'config_type': 'scheduled',
+                'subreddits': ",".join(set(r["subreddit"] for r in successful_results)),
+                'configs_processed': len(configs_to_process),
+                'successful_scrapes': len(successful_results),
+                'skipped_scrapes': len([r for r in results if r["status"] == "skipped"]),
+                'total_submissions': sum(r.get("submissions_found", 0) for r in results),
+                'total_comments_scraped': sum(r.get("comments_scraped", 0) for r in results)
+            }
+            
+            # Determine archive type
+            if len(configs_to_process) == 1:
+                config = configs_to_process[0]
+                archive_type = f"{config['name']}_{config['category']}"
+            else:
+                archive_type = "multiple_configs"
+            
+            # Launch independent archive and upload task
+            try:
+                upload_task = archive_and_upload_task.apply_async(
+                    args=[str(scrapes_dir), archive_type, None, configs_to_process, results, upload_metadata, True]
+                )
+                
+                # Wait for upload task to complete
+                upload_task_result = upload_task.get()
+                logger.info(f"Archive and upload task completed: {upload_task_result['status']}")
+                
+            except Exception as e:
+                logger.error(f"Archive and upload task failed: {e}")
+                upload_task_result = {"status": "failed", "error": str(e)}
+
+        # STEP 4: COLLECT DATABASE TASK RESULTS (optional - don't wait)
+        database_results = []
+        for db_task_info in database_tasks:
+            try:
+                # Check status without waiting (for reporting purposes)
+                from celery.result import AsyncResult
+                task_result = AsyncResult(db_task_info["task_id"])
+                database_results.append({
+                    "subreddit": db_task_info["subreddit"],
+                    "task_id": db_task_info["task_id"],
+                    "status": task_result.state,
+                    "ready": task_result.ready()
+                })
+            except Exception as e:
+                logger.warning(f"Could not check database task status: {e}")
+                database_results.append({
+                    "subreddit": db_task_info["subreddit"],
+                    "task_id": db_task_info["task_id"],
+                    "status": "unknown",
+                    "error": str(e)
+                })
+
+        # Return comprehensive results
+        return {
+            "status": "success",
+            "config_id": config_id,
+            "date": today,
+            "scraping_results": results,
+            "successful_scrapes": len(successful_results),
+            "skipped_scrapes": len([r for r in results if r["status"] == "skipped"]),
+            "total_submissions": sum(r.get("submissions_found", 0) for r in results),
+            "total_comments_scraped": sum(r.get("comments_scraped", 0) for r in results),
+            "database_tasks": database_results,
+            "upload_task": upload_task_result,
+            "modular_execution": True
+        }
+
+    except Exception as exc:
+        logger.error(f"Modular scheduled scraping task failed: {exc}")
+        
+        # Handle retries
+        if self.request.retries < max_retries:
+            logger.info(f"Retrying in {retry_delay} seconds (attempt {self.request.retries + 1}/{max_retries})")
+            raise self.retry(countdown=retry_delay, exc=exc)
+        else:
+            logger.error(f"Modular scheduled scraping task failed after {max_retries} retries")
+            return {
+                "status": "failed",
+                "config_id": config_id,
+                "error": str(exc),
+                "retries_exhausted": True,
+                "modular_execution": True
             }
 
 
