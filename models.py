@@ -34,7 +34,6 @@ class CategoryType(enum.Enum):
 class TaskType(enum.Enum):
     SCHEDULED = "scheduled"
     MANUAL = "manual"
-    LEGACY = "legacy"
 
 class TimeFilter(enum.Enum):
     HOUR = "hour"

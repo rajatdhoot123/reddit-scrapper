@@ -43,22 +43,11 @@ def generate_beat_schedule():
                     'args': [i]  # Pass config ID as argument
                 }
         
-        # Add legacy task for backward compatibility
-        beat_schedule['legacy-daily-reddit-scrape'] = {
-            'task': 'tasks.scrape_and_upload_to_r2',
-            'schedule': crontab(hour=23, minute=30),  # 11:30 PM UTC daily
-        }
-        
         return beat_schedule
         
     except ImportError:
         # Fallback schedule if config can't be imported
-        return {
-            'legacy-daily-reddit-scrape': {
-                'task': 'tasks.scrape_and_upload_to_r2',
-                'schedule': crontab(hour=23, minute=30),
-            }
-        }
+        return {}
 
 # Celery configuration
 app.conf.update(
