@@ -84,15 +84,6 @@ R2_ACCESS_KEY_ID = os.getenv('R2_ACCESS_KEY_ID')
 R2_SECRET_ACCESS_KEY = os.getenv('R2_SECRET_ACCESS_KEY')
 R2_BUCKET_NAME = os.getenv('R2_BUCKET_NAME', 'creditcardsindia')
 
-# Legacy configuration for backward compatibility
-SUBREDDIT_CONFIGS = [
-    {
-        "name": "CreditCardsIndia",
-        "category": "t",  # top posts
-        "n_results": 25
-    }
-]
-
 
 def get_r2_client():
     """Initialize and return R2 client"""
@@ -320,13 +311,21 @@ def scrape_comments(url: str, n_comments: int = 0, options: Optional[Dict] = Non
 
 
 def create_archive(scrapes_dir: Path, archive_type: str = "daily", 
-                  custom_name: Optional[str] = None) -> Path:
-    """Create a zip archive of all scraped data with enhanced options"""
+                  custom_name: Optional[str] = None, configs_processed: List[Dict] = None,
+                  timestamp: Optional[str] = None) -> Path:
+    """Create a zip archive of all scraped data with unified naming"""
     today = datetime.now().strftime("%Y-%m-%d")
     
     if custom_name:
+        # Use custom name if provided
         archive_name = f"{custom_name}_{today}.zip"
+    elif configs_processed:
+        # Use unified naming system if configs are provided
+        if timestamp is None:
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        archive_name = generate_unified_filename(configs_processed, archive_type, today, timestamp)
     else:
+        # Fallback to legacy naming for backward compatibility
         archive_name = f"reddit_scrapes_{archive_type}_{today}.zip"
     
     archive_path = Path(archive_name)
@@ -360,8 +359,14 @@ def create_archive(scrapes_dir: Path, archive_type: str = "daily",
                 "file_count": file_count,
                 "total_size_bytes": total_size,
                 "compression_level": compression_level,
-                "source_directory": str(scrapes_dir)
+                "source_directory": str(scrapes_dir),
+                "unified_naming": True  # Flag to indicate this uses the new naming system
             }
+            
+            # Add config info if available
+            if configs_processed:
+                metadata["configs_processed"] = len(configs_processed)
+                metadata["subreddits"] = [config.get("name") for config in configs_processed]
             
             metadata_content = json.dumps(metadata, indent=2)
             zipf.writestr("archive_metadata.json", metadata_content)
@@ -490,49 +495,16 @@ def process_subreddit_config(config: Dict, scrapes_dir: Path) -> Dict:
     return result
 
 
-def process_subreddit_config_with_database(config: Dict, scrapes_dir: Path, 
-                                          task_type: str = "scheduled") -> Dict:
-    """Process a single subreddit configuration WITH database operations (legacy function)"""
-    # First do the scraping
-    result = process_subreddit_config(config, scrapes_dir)
-    
-    if result["status"] != "success":
-        return result
-    
-    # Then handle database operations if available
-    if DATABASE_INTEGRATION_AVAILABLE:
-        try:
-            # Generate a task ID for this processing session
-            task_id = f"process_{result['subreddit']}_{result['category']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            
-            # Create serializable config (remove schedule fields)
-            config_serializable = make_config_serializable(config)
-            
-            # Launch database task asynchronously
-            database_task_result = database_only_task.apply_async(
-                args=[task_id, task_type, config_serializable, result, result.get("scrape_file_path")]
-            )
-            
-            # Add database task info to result
-            result["database_task_id"] = database_task_result.id
-            result["database_task_status"] = "launched"
-            
-            logger.info(f"Launched database task {database_task_result.id} for r/{result['subreddit']}")
-            
-        except Exception as e:
-            logger.error(f"Failed to launch database task: {e}")
-            result["database_error"] = str(e)
-            # Don't fail the entire process if database task launch fails
-    
-    return result
-
-
-def generate_unique_object_key(configs_to_process: List[Dict], scrape_type: str, 
-                              today: str, timestamp: str, results: List[Dict] = None) -> str:
-    """Generate a unique object key for R2 upload that differentiates between configurations"""
+def generate_unified_filename(configs_to_process: List[Dict], scrape_type: str, 
+                            today: str, timestamp: str, results: List[Dict] = None,
+                            include_extension: bool = True) -> str:
+    """
+    Generate a unified filename for both local archives and R2 object keys.
+    This ensures consistent naming between database records and R2 storage.
+    """
     
     if len(configs_to_process) == 1:
-        # Single configuration - create detailed path
+        # Single configuration - create detailed filename
         config = configs_to_process[0]
         subreddit = config["name"]
         category = config["category"]
@@ -548,12 +520,12 @@ def generate_unique_object_key(configs_to_process: List[Dict], scrape_type: str,
         }
         category_name = category_names.get(category, category)
         
-        # Build path components
-        path_parts = [subreddit, category_name]
+        # Build filename components
+        filename_parts = [scrape_type, subreddit, category_name]
         
         # Add time filter if present
         if config.get("time_filter"):
-            path_parts.append(config["time_filter"])
+            filename_parts.append(config["time_filter"])
         
         # Add n_results or keywords
         if category == "s" and config.get("keywords"):
@@ -561,18 +533,19 @@ def generate_unique_object_key(configs_to_process: List[Dict], scrape_type: str,
             keywords = str(config["keywords"])
             if len(keywords) > 30:
                 keywords_hash = hashlib.md5(keywords.encode()).hexdigest()[:8]
-                path_parts.append(f"search_{keywords_hash}")
+                filename_parts.append(f"search_{keywords_hash}")
             else:
                 safe_keywords = keywords.replace(" ", "_").replace("/", "_")
-                path_parts.append(f"search_{safe_keywords}")
+                filename_parts.append(f"search_{safe_keywords}")
         elif config.get("n_results"):
-            path_parts.append(f"{config['n_results']}results")
+            filename_parts.append(f"{config['n_results']}results")
         
-        # Join with underscores for the config part
-        config_path = "_".join(path_parts)
+        # Add timestamp
+        filename_parts.append(timestamp)
         
-        return f"{scrape_type}_scrapes/{subreddit}/{config_path}/{today}/{scrape_type}_{config_path}_{timestamp}.zip"
-    
+        # Join with underscores
+        filename = "_".join(filename_parts)
+        
     else:
         # Multiple configurations - use combined approach
         if results:
@@ -583,12 +556,12 @@ def generate_unique_object_key(configs_to_process: List[Dict], scrape_type: str,
         unique_subreddits = sorted(set(subreddit_names))
         
         if len(unique_subreddits) == 1:
-            subreddit_path = unique_subreddits[0]
+            subreddit_part = unique_subreddits[0]
         else:
-            subreddit_path = "_".join(unique_subreddits)
-            if len(subreddit_path) > 100:
+            subreddit_part = "_".join(unique_subreddits)
+            if len(subreddit_part) > 50:  # Limit length for filesystem compatibility
                 subreddit_hash = hashlib.md5("_".join(unique_subreddits).encode()).hexdigest()[:8]
-                subreddit_path = f"multi_subreddits_{subreddit_hash}"
+                subreddit_part = f"multi_subreddits_{subreddit_hash}"
         
         # Create a hash of all configs to ensure uniqueness
         config_signature = hashlib.md5(
@@ -596,7 +569,57 @@ def generate_unique_object_key(configs_to_process: List[Dict], scrape_type: str,
                         c.get("n_results"), c.get("keywords")) for c in configs_to_process])).encode()
         ).hexdigest()[:8]
         
-        return f"{scrape_type}_scrapes/{subreddit_path}/multi_config_{config_signature}/{today}/{scrape_type}_multi_{config_signature}_{timestamp}.zip"
+        filename = f"{scrape_type}_{subreddit_part}_multi_{config_signature}_{timestamp}"
+    
+    # Add extension if requested
+    if include_extension:
+        filename += ".zip"
+    
+    return filename
+
+
+def generate_unique_object_key(configs_to_process: List[Dict], scrape_type: str, 
+                              today: str, timestamp: str, results: List[Dict] = None) -> str:
+    """Generate a unique object key for R2 upload using unified naming"""
+    
+    # Generate the base filename (without extension for path building)
+    base_filename = generate_unified_filename(
+        configs_to_process, scrape_type, today, timestamp, results, include_extension=False
+    )
+    
+    if len(configs_to_process) == 1:
+        # Single configuration - create organized directory structure
+        config = configs_to_process[0]
+        subreddit = config["name"]
+        
+        # Category mapping for directory names
+        category_names = {
+            "h": "hot",
+            "n": "new", 
+            "t": "top",
+            "r": "rising",
+            "c": "controversial",
+            "s": "search"
+        }
+        category_name = category_names.get(config["category"], config["category"])
+        
+        return f"{scrape_type}_scrapes/{subreddit}/{category_name}/{today}/{base_filename}.zip"
+    
+    else:
+        # Multiple configurations - simpler directory structure
+        if results:
+            subreddit_names = [r["subreddit"] for r in results if r["status"] == "success"]
+        else:
+            subreddit_names = [config["name"] for config in configs_to_process]
+        
+        unique_subreddits = sorted(set(subreddit_names))
+        
+        if len(unique_subreddits) == 1:
+            subreddit_path = unique_subreddits[0]
+        else:
+            subreddit_path = "multi_subreddits"
+        
+        return f"{scrape_type}_scrapes/{subreddit_path}/multi_config/{today}/{base_filename}.zip"
 
 
 # ================================
@@ -766,12 +789,18 @@ def archive_and_upload_task(self, scrapes_dir_path: str, archive_type: str = "da
             }
         
         # Create archive
-        archive_path = create_archive(scrapes_dir, archive_type=archive_type, custom_name=custom_name)
-        
-        # Generate upload object key
         today = datetime.now().strftime("%Y-%m-%d")
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
         
+        archive_path = create_archive(
+            scrapes_dir, 
+            archive_type=archive_type, 
+            custom_name=custom_name, 
+            configs_processed=configs_processed,
+            timestamp=timestamp
+        )
+        
+        # Generate upload object key
         if configs_processed:
             object_key = generate_unique_object_key(configs_processed, archive_type, today, timestamp, results)
         else:
@@ -843,15 +872,20 @@ def scrape_and_upload_to_r2(self):
             result = process_subreddit_config(fallback_config, scrapes_dir)
             
             if result["status"] == "success" and scrapes_dir.exists():
-                # Create and upload archive
-                archive_path = create_archive(scrapes_dir, archive_type="legacy")
-                
+                # Create and upload archive with unified naming
                 timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-                object_key = f"legacy_scrapes/CreditCardsIndia/{today}/legacy_{timestamp}.zip"
+                archive_path = create_archive(
+                    scrapes_dir, 
+                    archive_type="legacy", 
+                    configs_processed=[fallback_config],
+                    timestamp=timestamp
+                )
+                
+                object_key = generate_unique_object_key([fallback_config], "legacy", today, timestamp)
                 
                 upload_metadata = {
-                    'scrape_type': 'legacy',
-                    'subreddit': 'CreditCardsIndia',
+                    'config_type': 'legacy',
+                    'subreddits': 'CreditCardsIndia',
                     'fallback_run': True
                 }
                 
@@ -941,20 +975,25 @@ def scheduled_scrape_task(self, config_id: int = None):
         if scrapes_dir.exists() and successful_results:
             # Check if archiving is enabled
             if GLOBAL_SCRAPING_CONFIG.get("create_archives_enabled", True):
-                # Create archive name based on configs processed
+                # Generate timestamp for unique naming
+                timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+                
+                # Create archive with unified naming
                 if len(configs_to_process) == 1:
                     config = configs_to_process[0]
-                    archive_name = f"{config['name']}_{config['category']}"
+                    archive_type = f"{config['name']}_{config['category']}"
                 else:
-                    archive_name = "multiple_configs"
+                    archive_type = "multiple_configs"
                 
-                archive_path = create_archive(scrapes_dir, archive_type=archive_name)
+                archive_path = create_archive(
+                    scrapes_dir, 
+                    archive_type=archive_type,
+                    configs_processed=configs_to_process,
+                    timestamp=timestamp
+                )
 
                 # Upload to R2 (if enabled)
                 if GLOBAL_SCRAPING_CONFIG.get("upload_to_r2_enabled", True):
-                    # Generate timestamp for unique naming
-                    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-                    
                     object_key = generate_unique_object_key(configs_to_process, "scheduled", today, timestamp, results)
                     
                     # Build metadata for upload
@@ -1382,11 +1421,16 @@ def manual_scrape_from_config():
     # Create archive if any scrapes were successful
     successful_scrapes = [r for r in results if r["status"] == "success"]
     if successful_scrapes and scrapes_dir.exists():
-        archive_path = create_archive(scrapes_dir, archive_type="manual", custom_name="manual_scrapes")
+        # Use unified naming for manual scrapes
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        archive_path = create_archive(
+            scrapes_dir, 
+            archive_type="manual", 
+            configs_processed=enabled_configs,
+            timestamp=timestamp
+        )
         
         # Upload to R2
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        
         object_key = generate_unique_object_key(enabled_configs, "manual", today, timestamp, results)
         upload_metadata = {
             'scrape_type': 'manual',
