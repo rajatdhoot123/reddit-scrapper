@@ -3,7 +3,7 @@
 import os
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from contextlib import contextmanager
@@ -244,6 +244,10 @@ class ScrapingDataProcessor:
                 
                 logger.info(f"Processed {processed_count} submissions from {json_file_path}")
                 
+                # Delete the processed file after successful database save
+                if processed_count > 0:
+                    self._safe_delete_file(json_file_path, "submissions")
+                
             except Exception as e:
                 logger.error(f"Error processing submissions file {json_file_path}: {e}")
                 self.update_scrape_session_status(
@@ -340,6 +344,10 @@ class ScrapingDataProcessor:
                 
                 logger.info(f"Processed {processed_count} comments for submission {submission_reddit_id}")
                 
+                # Delete the processed comment file after successful database save
+                if processed_count > 0:
+                    self._safe_delete_file(comments_file_path, "comments")
+                
             except Exception as e:
                 logger.error(f"Error processing comments file {comments_file_path}: {e}")
                 
@@ -422,6 +430,21 @@ class ScrapingDataProcessor:
                 item.completed_at = datetime.now()
                 if result:
                     item.processing_result = result
+    
+    def _safe_delete_file(self, file_path: Path, content_type: str) -> bool:
+        """Safely delete a processed file with proper error handling"""
+        try:
+            if file_path.exists():
+                file_size = file_path.stat().st_size
+                file_path.unlink()
+                logger.info(f"Deleted processed {content_type} file: {file_path.name} ({file_size:,} bytes)")
+                return True
+            else:
+                logger.warning(f"File not found for deletion: {file_path}")
+                return False
+        except Exception as e:
+            logger.error(f"Failed to delete {content_type} file {file_path}: {e}")
+            return False
 
 
 # Integration functions for use in tasks.py
@@ -468,9 +491,18 @@ def save_scraping_results_to_db(processor: ScrapingDataProcessor, task_id: str,
             config=config
         )
         
+        files_cleaned_up = []
+        total_submissions_processed = 0
+        total_comments_processed = 0
+        
         # Process submissions if scrape file exists
         if scrape_file and scrape_file.exists():
             submissions_count = processor.process_scraped_submissions(session_id, scrape_file)
+            total_submissions_processed = submissions_count
+            
+            # Track if the main scrape file was cleaned up
+            if submissions_count > 0 and not scrape_file.exists():
+                files_cleaned_up.append(str(scrape_file))
             
             # Extract and process comments if available - IMPROVED VERSION
             submissions_data = extract_submissions_data_from_file(scrape_file)
@@ -486,21 +518,35 @@ def save_scraping_results_to_db(processor: ScrapingDataProcessor, task_id: str,
                     if comments_file:
                         processed = processor.process_scraped_comments(reddit_id, comments_file)
                         comments_processed += processed
+                        
+                        # Track if comment file was cleaned up
+                        if processed > 0 and not comments_file.exists():
+                            files_cleaned_up.append(str(comments_file))
+                        
                         logger.info(f"Processed {processed} comments for submission {reddit_id} from {comments_file}")
                     else:
                         logger.debug(f"No comments file found for submission {reddit_id}")
             
+            total_comments_processed = comments_processed
             logger.info(f"Total comments processed and saved to database: {comments_processed}")
+            
+            # Log cleanup summary
+            if files_cleaned_up:
+                logger.info(f"Successfully cleaned up {len(files_cleaned_up)} processed files after database save")
+                for file_path in files_cleaned_up:
+                    logger.debug(f"Cleaned up: {file_path}")
         
         # Update session with final results
         processor.update_scrape_session_status(
             session_id, result['status'],
             submissions_found=result.get('submissions_found', 0),
-            comments_scraped=result.get('comments_scraped', 0),
+            comments_scraped=total_comments_processed,
             error_message=result.get('error') if result['status'] == 'failed' else None
         )
         
-        logger.info(f"Saved scraping results to database for session {session_id}")
+        logger.info(f"Saved scraping results to database for session {session_id} "
+                   f"(submissions: {total_submissions_processed}, comments: {total_comments_processed}, "
+                   f"files cleaned: {len(files_cleaned_up)})")
         
     except Exception as e:
         logger.error(f"Failed to save scraping results to database: {e}")
@@ -570,33 +616,38 @@ def extract_reddit_id_from_url(url: str) -> str:
 
 def find_comments_file_by_reddit_id(reddit_id: str) -> Optional[Path]:
     """Find comments file for a specific submission by Reddit ID (checking file content)"""
-    today = datetime.now().strftime("%Y-%m-%d")
-    comments_dir = Path(f"scrapes/{today}/comments")
-    
-    if not comments_dir.exists():
-        return None
-    
-    # Look through all comment files and check their content
-    for file_path in comments_dir.glob("*.json"):
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
-            # Check if the URL in scrape_settings contains our Reddit ID
-            url = data.get('scrape_settings', {}).get('url', '')
-            if reddit_id in url:
-                logger.debug(f"Found comment file for Reddit ID {reddit_id}: {file_path}")
-                return file_path
-                
-            # Also check permalink in submission_metadata as backup
-            permalink = data.get('data', {}).get('submission_metadata', {}).get('permalink', '')
-            if reddit_id in permalink:
-                logger.debug(f"Found comment file for Reddit ID {reddit_id} via permalink: {file_path}")
-                return file_path
-                
-        except (json.JSONDecodeError, IOError) as e:
-            logger.debug(f"Could not read comment file {file_path}: {e}")
+    # Search across the last 3 days to handle timezone/timing issues
+    for days_back in range(3):
+        search_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        comments_dir = Path(f"scrapes/{search_date}/comments")
+        
+        if not comments_dir.exists():
+            logger.debug(f"Comments directory does not exist: {comments_dir}")
             continue
+        
+        logger.debug(f"Searching for Reddit ID {reddit_id} in {comments_dir}")
+        
+        # Look through all comment files and check their content
+        for file_path in comments_dir.glob("*.json"):
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                # Check if the URL in scrape_settings contains our Reddit ID
+                url = data.get('scrape_settings', {}).get('url', '')
+                if reddit_id in url:
+                    logger.debug(f"Found comment file for Reddit ID {reddit_id}: {file_path}")
+                    return file_path
+                    
+                # Also check permalink in submission_metadata as backup
+                permalink = data.get('data', {}).get('submission_metadata', {}).get('permalink', '')
+                if reddit_id in permalink:
+                    logger.debug(f"Found comment file for Reddit ID {reddit_id} via permalink: {file_path}")
+                    return file_path
+                    
+            except (json.JSONDecodeError, IOError) as e:
+                logger.debug(f"Could not read comment file {file_path}: {e}")
+                continue
     
     logger.debug(f"No comment file found for Reddit ID: {reddit_id}")
     return None
