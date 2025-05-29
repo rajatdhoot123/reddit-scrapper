@@ -878,6 +878,31 @@ def scheduled_scrape_task(self, config_id: int = None):
         for config in configs_to_process:
             result = process_subreddit_config(config, scrapes_dir)
             results.append(result)
+            
+            # ADDED: Save scraping results to database for successful scrapes
+            if result["status"] == "success" and DATABASE_INTEGRATION_AVAILABLE:
+                try:
+                    task_id = f"scheduled_{result['subreddit']}_{result['category']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    
+                    # Create serializable config (remove schedule fields)
+                    config_serializable = make_config_serializable(config)
+                    
+                    # Get database processor and save results immediately
+                    db_processor = get_database_processor()
+                    if db_processor:
+                        scrape_file = Path(result.get("scrape_file")) if result.get("scrape_file") else None
+                        save_scraping_results_to_db(
+                            processor=db_processor,
+                            task_id=task_id,
+                            task_type="scheduled",
+                            config=config_serializable,
+                            result=result,
+                            scrape_file=scrape_file
+                        )
+                        logger.info(f"Saved scraping results to database for r/{result['subreddit']}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to save scraping results to database for r/{result['subreddit']}: {e}")
 
         # Create archive of all scraped data
         successful_results = [r for r in results if r["status"] == "success"]

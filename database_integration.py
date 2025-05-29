@@ -218,6 +218,7 @@ class ScrapingDataProcessor:
                             session, submission_data, session_id, subreddit.id
                         )
                         session.add(submission)
+                        session.flush()  # Flush to get the submission ID
                         
                         # Add to processing queue for downstream apps
                         add_to_processing_queue(
@@ -329,6 +330,7 @@ class ScrapingDataProcessor:
                             )
                             comment.subreddit_id = submission.subreddit_id
                             session.add(comment)
+                            session.flush()  # Flush to get the comment ID
                             
                             # Add to processing queue
                             add_to_processing_queue(
@@ -497,6 +499,10 @@ def save_scraping_results_to_db(processor: ScrapingDataProcessor, task_id: str,
         
         # Process submissions if scrape file exists
         if scrape_file and scrape_file.exists():
+            # Extract submission data BEFORE processing (since processing deletes the file)
+            submissions_data = extract_submissions_data_from_file(scrape_file)
+            
+            # Process submissions to database
             submissions_count = processor.process_scraped_submissions(session_id, scrape_file)
             total_submissions_processed = submissions_count
             
@@ -504,8 +510,7 @@ def save_scraping_results_to_db(processor: ScrapingDataProcessor, task_id: str,
             if submissions_count > 0 and not scrape_file.exists():
                 files_cleaned_up.append(str(scrape_file))
             
-            # Extract and process comments if available - IMPROVED VERSION
-            submissions_data = extract_submissions_data_from_file(scrape_file)
+            # Process comments using the pre-extracted submission data
             comments_processed = 0
             
             for submission in submissions_data:
