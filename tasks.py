@@ -1308,7 +1308,6 @@ def get_scraping_status():
     
     status = {
         "timestamp": datetime.now().isoformat(),
-        "total_configs": len(SUBREDDIT_CONFIGS),
         "enabled_configs": len(enabled_configs),
         "subreddits": list(set(config['name'] for config in enabled_configs)),
         "active_tasks": active_tasks,
@@ -1329,7 +1328,7 @@ def get_scraping_status():
 def test_scrape_task():
     """Test task to manually trigger scraping"""
     logger.info("Running test scrape task")
-    # Call the daily scrape task for testing
-    result = daily_scrape_task.apply_async().get()
+    # Call the first scheduled task for testing
+    result = scheduled_scrape_task.apply_async(args=[0]).get()
     logger.info(f"Test scrape task completed with result: {result}")
     return result
