@@ -18,6 +18,7 @@ import pexpect
 import sys
 import random
 from typing import Dict, List, Optional, Union
+from argparse import Namespace
 
 # Load environment variables
 load_dotenv()
@@ -32,6 +33,15 @@ from subreddit_config import (
     GLOBAL_SCRAPING_CONFIG,
     get_enabled_scheduled_configs
 )
+
+# Import URS utilities for filename generation
+try:
+    from urs.utils.Export import NameFile
+    from urs.utils.Global import short_cat
+    URS_UTILS_AVAILABLE = True
+except ImportError as e:
+    URS_UTILS_AVAILABLE = False
+    print(f"URS utilities not available: {e}")
 
 # Import database integration
 try:
@@ -77,8 +87,8 @@ def get_r2_client():
 
 
 def get_latest_scrape_file(subreddit: str, category: str, n_results_or_keywords: Union[int, str], 
-                          time_filter: Optional[str] = None, use_csv: bool = False) -> Optional[Path]:
-    """Get the most recent scrape file for a subreddit"""
+                          time_filter: Optional[str] = None, use_csv: bool = False, rules: bool = False) -> Optional[Path]:
+    """Get the most recent scrape file for a subreddit using Export.py filename logic"""
     today = datetime.now().strftime("%Y-%m-%d")
     scrapes_dir = Path(f"scrapes/{today}/subreddits")
 
@@ -86,44 +96,43 @@ def get_latest_scrape_file(subreddit: str, category: str, n_results_or_keywords:
     if not scrapes_dir.exists():
         return None
 
-    # Category mapping
-    category_mapping = {
-        "n": "new",
-        "h": "hot",
-        "t": "top",
-        "r": "rising",
-        "c": "controversial",
-        "s": "search"
-    }
+    if not URS_UTILS_AVAILABLE:
+        logger.error("URS utilities not available, cannot generate filename")
+        return None
 
-    file_category = category_mapping.get(category, category)
-    
-    # Handle search category differently
-    if category == "s":
-        # For search, keywords are used instead of n_results
-        expected_filename = f"{subreddit}-{file_category}-{n_results_or_keywords}"
-        if time_filter:
-            expected_filename += f"-{time_filter}"
-    else:
-        expected_filename = f"{subreddit}-{file_category}-{n_results_or_keywords}-results"
-        if time_filter:
-            expected_filename += f"-{time_filter}"
-    
-    # Add file extension
-    file_extension = ".csv" if use_csv else ".json"
-    expected_filename += file_extension
-    
-    logger.info(f"Expected file: {expected_filename}")
-    file_path = scrapes_dir / expected_filename
-
-    # Try up to 5 times with a 2 second delay between attempts
-    for attempt in range(5):
-        logger.info(f"Checking file (attempt {attempt + 1}/5): {file_path}")
-        if file_path.exists():
-            return file_path
-        time.sleep(2)
-
-    return None
+    try:
+        # Create a NameFile instance for filename generation
+        name_file = NameFile()
+        
+        # Create a mock args object for the Export.py interface
+        args = Namespace()
+        args.rules = rules
+        
+        # Prepare each_sub format expected by Export.py: [subreddit, n_results_or_keywords, time_filter]
+        each_sub = [subreddit, n_results_or_keywords, time_filter]
+        
+        # Generate filename using Export.py logic
+        expected_filename = name_file.r_fname(args, category, each_sub, subreddit)
+        
+        # Add file extension
+        file_extension = ".csv" if use_csv else ".json"
+        expected_filename += file_extension
+        
+        logger.info(f"Expected file: {expected_filename}")
+        file_path = scrapes_dir / expected_filename
+        
+        # Try up to 5 times with a 2 second delay between attempts
+        for attempt in range(5):
+            logger.info(f"Checking file (attempt {attempt + 1}/5): {file_path}")
+            if file_path.exists():
+                return file_path
+            time.sleep(2)
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error using Export.py filename generation: {e}")
+        return None
 
 
 def extract_submission_urls(json_file):
@@ -209,7 +218,7 @@ def scrape_subreddit(subreddit: str, category: str, n_results_or_keywords: Union
 
         return get_latest_scrape_file(
             subreddit, category, n_results_or_keywords, 
-            time_filter, options.get("csv", False)
+            time_filter, options.get("csv", False), options.get("rules", False)
         )
 
     except Exception as e:
